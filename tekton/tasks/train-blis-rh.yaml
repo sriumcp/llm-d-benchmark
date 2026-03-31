@@ -1,0 +1,106 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: train-blis-rh
+spec:
+  description: |
+    Train BLIS using the RH data for RH compass
+  
+  workspaces:
+    - name: data
+
+  params:
+    - name: results_dir
+      type: string
+    - name: num_iter
+      type: string
+    - name: LLM_NAME
+      type: string
+    - name: TP
+      type: string
+    - name: GPU_TYPE
+      type: string
+    - name: VLLM_VERSION
+      type: string
+    - name: TRAINING_FILEPATH
+      type: string
+  
+  steps:
+    - name: build-golang-sim
+      image: golang:1.25.5-bookworm
+      script: |
+        #!/bin/sh
+        set -eu
+        echo "golang builder is called"
+
+        echo "🔄 Installing required tools"
+        apt-get update
+        apt-get install -y \
+          git \
+          && apt-get clean && rm -rf /var/cache/apt
+
+        git clone -b streaming https://github.com/inference-sim/inference-sim.git
+        cd inference-sim
+        go build -o /workspace/simulation_worker main.go
+        ls /workspace/simulation_worker
+
+    - name: train-bliss
+      image: python:3.12.9-slim-bookworm
+      env:
+        - name: SIM_WORKER_PATH
+          value: /workspace/simulation_worker
+        - name: LLM_NAME
+          value: $(params.LLM_NAME)
+        - name: TP
+          value: $(params.TP)
+        - name: GPU_TYPE
+          value: $(params.GPU_TYPE)
+        - name: VLLM_VERSION
+          value: $(params.VLLM_VERSION)
+        - name: TRAINING_FILEPATH
+          value: "$(workspaces.data.path)/$(params.TRAINING_FILEPATH)"
+        - name: RESULTS_DIR
+          value: "$(workspaces.data.path)/$(params.results_dir)"
+        - name: NUM_ITER
+          value: $(params.num_iter)
+
+
+      script: |
+        #!/bin/sh
+        set -eu
+        echo "train-blis called"
+
+        echo "🔄 Installing required tools"
+        apt-get update
+        apt-get install -y \
+          git \
+          && apt-get clean && rm -rf /var/cache/apt
+
+        git clone -b scenario6 https://github.com/inference-sim/vllm-data-collection.git
+        cd vllm-data-collection
+        pip install -r requirements.txt
+        pip install pandas
+        pip install optuna
+        pip install openpyxl
+        cd scenario6
+
+        echo "Check out the golang binary here"
+        ls $SIM_WORKER_PATH
+
+        echo "Check out the golang binary here"
+
+        python train_blis.py \
+          --LLM-name            "$LLM_NAME" \
+          --tp                  "$TP" \
+          --GPU                 "$GPU_TYPE" \
+          --vllm-version        "$VLLM_VERSION" \
+          --training-filepath   "$TRAINING_FILEPATH" \
+          --blis-binary-path    "$SIM_WORKER_PATH"
+
+        echo "Check output and move it"
+        ls .
+
+        mv coefficients.yaml $RESULTS_DIR
+
+        echo "Done!!!!"
+

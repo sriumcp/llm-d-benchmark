@@ -1,0 +1,40 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: delete-otel-collector
+spec:
+  description: |
+    Delete OTEL collector
+  params:
+    - { name: namespace, type: string }
+    - { name: modelLabel, type: string }
+    - { name: debug, type: string, default: "false" }
+
+  steps:
+    - name: dry-run
+      when:
+        - input: $(params.debug)
+          operator: in
+          values: ["true", "True"]
+      image: alpine:3.20
+      script: |
+        #!/bin/sh
+        set -eu
+        echo "delete-otel-collector called"
+
+    - name: delete
+      when:
+        - input: $(params.debug)
+          operator: in
+          values: ["false", "False"]
+      env:
+        - { name: NAMESPACE, value: "$(params.namespace)" }
+        - { name: MODEL_LABEL, value: "$(params.modelLabel)" }
+      image: alpine/kubectl:1.34.1
+      script: |
+        #!/bin/sh
+        set -eu
+
+        kubectl --namespace ${NAMESPACE} delete cm/otel-${MODEL_LABEL}-config --ignore-not-found
+        kubectl --namespace ${NAMESPACE} delete deploy/otel-${MODEL_LABEL} --ignore-not-found
+        kubectl --namespace ${NAMESPACE} delete svc/otel-${MODEL_LABEL} --ignore-not-found

@@ -1,0 +1,495 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-model
+spec:
+  description: >-
+    Deploy model engines (vllm) using the modelservice helm chart.
+    Configuration is expressed using three mechanisms:
+    (a) params.config, a helm values file (typically a common, default configuration); 
+    (b) params.configOverride, an optional helm values file that overrides params.config; and 
+    (c) params.overrides, an optional list of strings of the form path=value of overrides.
+    This task converts any params.overrides into helm --set options.
+    This task automaticaly adds overrides for fullnameOverride, modelArtifacts.name, 
+    modelArtifacts.uri and modelArtifacts.labels."llm-d.ai/model".
+    Finally, this chart waits for the model engines to be ready.
+  
+  workspaces:
+    - name: model-cache
+
+  params:
+    - name: config
+      type: string
+    - name: configOverrides
+      type: string
+      default: ""
+    - name: overrides
+      type: array
+      default: []
+
+    - name: model
+      type: string
+    - name: modelLabel
+      type: string
+    - name: namespace
+      type: string
+    - name: startupTimeout
+      default: "600"
+
+  steps:
+
+    - name: apply-overrides
+      env:
+        - { name: MODEL, value: "$(params.model)" }
+        - { name: MODEL_LABEL, value: "$(params.modelLabel)" }
+        - { name: MODEL_PVC_CLAIM, value: "$(workspaces.model-cache.claim)" }
+        - { name: TEKTON_RESULT_PATH, value: "$(step.results.merged-values.path)" }
+      image: python:3.11-slim
+      args:
+        - "$(params.overrides[*])"
+      script: |
+        #!/usr/bin/env sh
+        set -euo pipefail
+
+        pip install --no-cache-dir pyyaml >/dev/null
+
+        cat > /tmp/values.yaml <<'VALUES_YAML'
+        $(params.config)
+        VALUES_YAML
+
+        # write rules.txt (one rule per line)
+        : > /tmp/rules.txt
+        for a in "$@"; do
+          printf '%s\n' "$a" >> /tmp/rules.txt
+        done
+        printf '%s\n' "fullnameOverride=${MODEL_LABEL}" >> /tmp/rules.txt
+        printf '%s\n' "modelArtifacts.name=${MODEL}" >> /tmp/rules.txt
+        printf '%s\n' "modelArtifacts.uri=pvc://${MODEL_PVC_CLAIM}/models/${MODEL}" >> /tmp/rules.txt
+        printf '%s\n' "modelArtifacts.labels.\"llm-d.ai/model\"=${MODEL_LABEL}" >> /tmp/rules.txt
+        echo ">>> rules.txt"
+        cat /tmp/rules.txt
+
+        cat > /tmp/apply_overrides.py <<'PY'
+        #!/usr/bin/env python3
+        import argparse
+        import sys
+        import re
+        from typing import Any, Dict, List, Tuple, Optional
+
+        try:
+            import yaml
+        except ImportError:
+            sys.stderr.write("ERROR: PyYAML is required (pip install pyyaml)\n")
+            sys.exit(1)
+
+        # ---------- Parsing helpers (fixed) ----------
+
+        def find_assignment_index(s: str) -> int:
+            depth = 0
+            in_squote = False
+            in_dquote = False
+            i = 0
+            while i < len(s):
+                ch = s[i]
+                if ch == '\\' and i + 1 < len(s) and (in_squote or in_dquote):
+                    i += 2
+                    continue
+                if not in_squote and not in_dquote:
+                    if ch == '[':
+                        depth += 1
+                    elif ch == ']':
+                        depth = max(0, depth - 1)
+                    elif ch == '=' and depth == 0:
+                        return i
+                    elif ch == '"':
+                        in_dquote = True
+                    elif ch == "'":
+                        in_squote = True
+                else:
+                    if in_dquote and ch == '"':
+                        in_dquote = False
+                    elif in_squote and ch == "'":
+                        in_squote = False
+                i += 1
+            return -1
+
+        def split_outside_brackets(s: str, sep: str='.') -> List[str]:
+            parts: List[str] = []
+            buf: List[str] = []
+            depth = 0
+            in_squote = False
+            in_dquote = False
+            i = 0
+            while i < len(s):
+                ch = s[i]
+                if ch == '\\' and i + 1 < len(s) and (in_squote or in_dquote):
+                    buf.append(ch); buf.append(s[i+1])
+                    i += 2
+                    continue
+                if not in_squote and not in_dquote:
+                    if ch == '[':
+                        depth += 1
+                    elif ch == ']':
+                        depth = max(0, depth - 1)
+                    elif ch == '"':
+                        in_dquote = True
+                    elif ch == "'":
+                        in_squote = True
+                    elif ch == sep and depth == 0:
+                        parts.append(''.join(buf)); buf = []
+                        i += 1
+                        continue
+                else:
+                    if in_dquote and ch == '"':
+                        in_dquote = False
+                    elif in_squote and ch == "'":
+                        in_squote = False
+                buf.append(ch); i += 1
+            parts.append(''.join(buf))
+            return parts
+
+        # --- Segment parsing that supports quoted names ---
+        def _decode_escapes(s: str) -> str:
+            """Decode simple backslash escapes inside quoted names."""
+            out = []
+            i = 0
+            while i < len(s):
+                if s[i] == '\\' and i + 1 < len(s):
+                    out.append(s[i+1])
+                    i += 2
+                else:
+                    out.append(s[i])
+                    i += 1
+            return ''.join(out)
+
+        def parse_segment(seg: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+            """
+            Parse a single path segment which may be:
+              - unquoted:   name            or  name[key=value,...]
+              - double/single-quoted: "a.b" or  'a.b'  (optionally followed by [key=val,...])
+            Returns (name, conditions_dict_or_None)
+            """
+            seg = seg.strip()
+            if not seg:
+                raise ValueError("Empty path segment")
+
+            # Quoted name?
+            if seg[0] in ('"', "'"):
+                q = seg[0]
+                i = 1
+                buf = []
+                while i < len(seg):
+                    ch = seg[i]
+                    if ch == '\\' and i + 1 < len(seg):
+                        buf.append(seg[i+1])
+                        i += 2
+                        continue
+                    if ch == q:
+                        i += 1
+                        break
+                    buf.append(ch)
+                    i += 1
+                else:
+                    raise ValueError(f"Unterminated quoted segment: {seg}")
+
+                name = ''.join(buf)
+                rest = seg[i:].strip()
+
+                conds = None
+                if rest:
+                    if not (rest.startswith('[') and rest.endswith(']')):
+                        raise ValueError(f"Invalid path segment (unexpected content after quoted name): {seg}")
+                    conds = parse_conditions(rest[1:-1])
+                return name, conds
+
+            # Unquoted (original behavior)
+            m = re.fullmatch(r'(?P<name>[^.\[\]]+)(?:\[(?P<conds>[^\]]+)\])?', seg)
+            if not m:
+                raise ValueError(f"Invalid path segment: {seg}")
+            name = m.group('name').strip()
+            conds_raw = m.group('conds')
+            conds = parse_conditions(conds_raw) if conds_raw else None
+            return name, conds
+
+        def parse_conditions(cond_str: str) -> Dict[str, Any]:
+            parts = re.split(r'\s*(?:,|&&)\s*', cond_str.strip())
+            conds: Dict[str, Any] = {}
+            for p in parts:
+                if not p:
+                    continue
+                if '=' not in p:
+                    raise ValueError(f"Invalid condition (expected key=value): {p}")
+                k, v = p.split('=', 1)
+                k = k.strip()
+                v = v.strip()
+                if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                    v_unquoted = v[1:-1]
+                else:
+                    v_unquoted = v
+                try:
+                    v_parsed = yaml.safe_load(v_unquoted)
+                except Exception:
+                    v_parsed = v_unquoted
+                conds[k] = v_parsed
+            return conds
+
+        def parse_rule(rule: str) -> Tuple[List[Tuple[str, Optional[Dict[str, Any]]]], str]:
+            idx = find_assignment_index(rule)
+            if idx == -1:
+                raise ValueError("No assignment operator '=' found outside selectors/quotes")
+            lhs = rule[:idx]
+            rhs = rule[idx+1:]
+
+            raw_segments = split_outside_brackets(lhs)
+            segments: List[Tuple[str, Optional[Dict[str, Any]]]] = []
+            for seg in raw_segments:
+                name, conds = parse_segment(seg)
+                segments.append((name, conds))
+            return segments, rhs
+
+        # ---------- Data helpers ----------
+
+        def is_list_of_scalars(lst: List[Any]) -> bool:
+            return all(isinstance(x, (str, int, float, bool)) or x is None for x in lst)
+
+        def ensure_list_of_dicts(parent: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
+            v = parent.get(key)
+            if v is None or not isinstance(v, list):
+                parent[key] = []
+                return parent[key]
+            if any(not isinstance(x, dict) for x in v):
+                raise TypeError(f"Expected list of objects at '{key}', found non-object entries.")
+            return v  # type: ignore
+
+        def select_or_create_in_list(lst: List[Dict[str, Any]], conds: Dict[str, Any]) -> Dict[str, Any]:
+            for item in lst:
+                if all(item.get(k) == v for k, v in conds.items()):
+                    return item
+            new_item = dict(conds)
+            lst.append(new_item)
+            return new_item
+
+        def upsert_scalar_list(lst: List[Any], desired: str):
+            if '=' in desired:
+                prefix = desired.split('=', 1)[0] + '='
+                for i, s in enumerate(lst):
+                    if isinstance(s, str) and s.startswith(prefix):
+                        lst[i] = desired
+                        return
+                lst.append(desired)
+            else:
+                if desired not in lst:
+                    lst.append(desired)
+
+        def set_value(target_parent: Dict[str, Any], key: str, rhs: str):
+            try:
+                parsed = yaml.safe_load(rhs)
+            except Exception:
+                parsed = rhs
+            target_parent[key] = parsed
+
+        # ---------- Rule applier (fixed traversal) ----------
+
+        def apply_rule(doc: Dict[str, Any], rule: str):
+            segments, rhs = parse_rule(rule)
+
+            cur: Any = doc
+            for idx, (name, conds) in enumerate(segments):
+                is_last = (idx == len(segments) - 1)
+
+                if conds is not None:
+                    # selector: ensure list at this key and select/create the object
+                    if not isinstance(cur, dict):
+                        raise TypeError(f"Expected dict to access '{name}[...]' but found {type(cur).__name__}")
+                    lst = ensure_list_of_dicts(cur, name)
+                    cur = select_or_create_in_list(lst, conds)
+                    continue
+
+                if is_last:
+                    if not isinstance(cur, dict):
+                        raise TypeError(f"Cannot set field '{name}' on non-dict of type {type(cur).__name__}")
+                    existing = cur.get(name, None)
+                    if isinstance(existing, list):
+                        if is_list_of_scalars(existing) or len(existing) == 0:
+                            desired = rhs if isinstance(rhs, str) else str(rhs)
+                            upsert_scalar_list(existing, desired)
+                        else:
+                            raise TypeError(f"Target '{name}' is a list but not of scalars; refusing to overwrite.")
+                    elif existing is None:
+                        if name in ("args", "command",):
+                            cur[name] = []
+                            upsert_scalar_list(cur[name], rhs)
+                        else:
+                            set_value(cur, name, rhs)
+                    else:
+                        set_value(cur, name, rhs)
+                    return
+
+                # Intermediate plain segment: always ensure a dict
+                if not isinstance(cur, dict):
+                    raise TypeError(f"Expected dict to access '{name}' but found {type(cur).__name__}")
+                v = cur.get(name)
+                if v is None or not isinstance(v, dict):
+                    cur[name] = {}
+                cur = cur[name]
+
+        # ---------- CLI ----------
+
+        def main():
+            ap = argparse.ArgumentParser(description="Upsert Helm values using simple rules.")
+            ap.add_argument("-i", "--in", dest="input", default="-", help="Input values YAML file (default: stdin)")
+            ap.add_argument("-o", "--out", dest="output", default="-", help="Output YAML file (default: stdout)")
+            ap.add_argument("-r", "--rule", action="append", dest="rules", default=[], help="Rule to apply (can be repeated)")
+            ap.add_argument("-R", "--rules-file", dest="rules_file", help="File with one rule per line")
+            args = ap.parse_args()
+
+            # Load input YAML
+            data_stream = sys.stdin if args.input == "-" else open(args.input, "r", encoding="utf-8")
+            try:
+                doc = yaml.safe_load(data_stream) or {}
+            finally:
+                if args.input != "-":
+                    data_stream.close()
+
+            # Load rules
+            rules: List[str] = list(args.rules)
+            if args.rules_file:
+                with open(args.rules_file, "r", encoding="utf-8") as rf:
+                    for line in rf:
+                        s = line.strip()
+                        if not s or s.startswith("#"):
+                            continue
+                        rules.append(s)
+
+            if not rules:
+                sys.stderr.write("No rules provided. Nothing to do.\n")
+                sys.exit(0)
+
+            # Apply rules in order
+            for rule in rules:
+                try:
+                    apply_rule(doc, rule)
+                except Exception as e:
+                    sys.stderr.write(f"ERROR applying rule [{rule}]: {e}\n")
+                    sys.exit(2)
+
+            # Write output
+            out_stream = sys.stdout if args.output == "-" else open(args.output, "w", encoding="utf-8")
+            try:
+                yaml.safe_dump(doc, out_stream, sort_keys=False, width=float("inf"))
+            finally:
+                if args.output != "-":
+                    out_stream.close()
+
+        if __name__ == "__main__":
+            main()
+        PY
+        chmod +x /tmp/apply_overrides.py
+
+        # Run the merge
+        /tmp/apply_overrides.py \
+          -i /tmp/values.yaml \
+          -R /tmp/rules.txt \
+          -o /workspace/values.yaml
+
+        # log the merged values file
+        cat /workspace/values.yaml
+
+        echo "expect to create helm release $(params.modelLabel)-model"
+
+    - name: install-model
+      ref: 
+        name: helm-upgrade-install
+      params:
+        - name: releaseName
+          value: $(params.modelLabel)-model
+
+        - name: chart
+          value: "/tmp/llm-d-modelservice/charts/llm-d-modelservice"
+
+        - name: git_url
+          value: "https://github.com/kalantar/llm-d-modelservice"
+        - name: git_revision
+          value: "main"
+        - name: checkout_dir
+          value: "/tmp/llm-d-modelservice"
+
+        - name: namespace
+          value: $(params.namespace)
+        - name: wait
+          value: "false"
+        - name: valuesYamlUrl
+          value: "/workspace/values.yaml"
+        - name: extraValues
+          value: "$(params.configOverrides)"
+
+    - name: wait-for-model
+      env:
+        - { name: MODEL, value: "$(params.model)" }
+        - { name: MODEL_LABEL, value: "$(params.modelLabel)" }
+        - { name: NAMESPACE, value: "$(params.namespace)" }
+        - { name: START_TIMEOUT, value: "$(params.startupTimeout)" }
+      image: alpine/kubectl:1.34.1
+      script: |
+        #!/bin/sh
+        set -eu
+
+        # Install tools
+        apk add --no-cache yq >/dev/null
+        
+        HELM_VALUES_YAML="$(cat /workspace/values.yaml)"
+        DECODE_REPLICAS=0
+        PREFILL_REPLICAS=0
+        # TBD this should really be done on the resolved manifest; not the input configuration
+        decode_enabled=$(printf "%s" "${HELM_VALUES_YAML}" | yq -r '.decode.create // false')
+        if [ "${decode_enabled}" = "true" ]; then
+          DECODE_REPLICAS=$(printf "%s" "${HELM_VALUES_YAML}" | yq -r '.decode.replicas // 0')
+        fi
+        prefill_enabled=$(printf "%s" "${HELM_VALUES_YAML}" | yq -r '.prefill.create // false')
+        if [ "${prefill_enabled}" = "true" ]; then
+          PREFILL_REPLICAS=$(printf "%s" "${HELM_VALUES_YAML}" | yq -r '.prefill.replicas // 0')
+        fi
+        
+        echo "# decode replicas = ${DECODE_REPLICAS}"
+        echo "# prefill replicas = ${PREFILL_REPLICAS}"
+        echo "timeout = ${START_TIMEOUT}"
+
+        echo "⏳ Waiting for pods serving model ${MODEL} to be 'Running' (label = ${MODEL_LABEL})"
+
+        if [ ${DECODE_REPLICAS} -gt 0 ]; then
+          kubectl --namespace ${NAMESPACE} \
+            wait pod \
+              -l llm-d.ai/model=${MODEL_LABEL},llm-d.ai/role=decode \
+              --for=create \
+              --timeout=${START_TIMEOUT}s
+          echo "✅ (decode) pods serving model ${MODEL} created (label = ${MODEL_LABEL})"
+        fi
+ 
+        if [ ${PREFILL_REPLICAS} -gt 0 ]; then
+          kubectl --namespace ${NAMESPACE} \
+            wait pod \
+              -l llm-d.ai/model=${MODEL_LABEL},llm-d.ai/role=prefill \
+              --for=create \
+              --timeout=${START_TIMEOUT}s
+          echo "✅ prefill pods serving model ${MODEL} created (label = ${MODEL_LABEL})"
+        fi
+
+        echo "⏳ Waiting for pods serving model ${MODEL} to be 'Ready' (label = ${MODEL_LABEL})"
+
+        if [ ${DECODE_REPLICAS} -gt 0 ]; then
+          kubectl --namespace ${NAMESPACE} \
+            wait pod \
+              -l llm-d.ai/model=${MODEL_LABEL},llm-d.ai/role=decode \
+              --for=condition=Ready=True \
+              --timeout=${START_TIMEOUT}s
+          echo "✅ (decode) pods serving model ${MODEL} ready (label = ${MODEL_LABEL})"
+        fi
+
+        if [ ${PREFILL_REPLICAS} -gt 0 ]; then
+         kubectl --namespace ${NAMESPACE} \
+          wait pod \
+            -l llm-d.ai/model=${MODEL_LABEL},llm-d.ai/role=prefill \
+            --for=condition=Ready=True \
+            --timeout=${START_TIMEOUT}s
+          echo "✅ prefill pods serving model ${MODEL} ready (label = ${MODEL_LABEL})"
+        fi

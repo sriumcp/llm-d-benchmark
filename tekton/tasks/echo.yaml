@@ -1,0 +1,19 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: echo
+spec:
+  description: |
+    Print provided text to stdout. Useful for logging pipeline stage markers.
+  params:
+    - name: text
+      type: string
+      description: Text to echo (supports multiline)
+      default: ""
+  steps:
+    - name: echo
+      image: alpine:3.20
+      script: |
+        #!/bin/sh
+        set -eu
+        printf "%s\n" "$(params.text)"

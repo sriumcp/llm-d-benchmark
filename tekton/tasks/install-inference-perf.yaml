@@ -1,0 +1,47 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: install-inference-perf
+spec:
+  description: |
+    Install inference-perf packages into the shared source workspace.
+
+  workspaces:
+    - name: source
+
+  steps:
+    - name: install-packages
+      env:
+        - { name: GIT_REPO_URL, value: "https://github.com/kubernetes-sigs/inference-perf.git" }
+        - { name: GIT_REVISION, value: "main" }
+        - { name: GIT_COMMIT, value: "e8e0aa99c57f2ffa0912df7ba1fbd2a8a596a041" }
+        # - { name: GIT_COMMIT, value: "1ccc48b6bb9c9abb61558b719041fb000b265e59" }
+        - { name: HARNESS, value: inference-perf }
+
+      image: python:3.12.9-slim-bookworm
+      script: |
+        #!/bin/bash
+        set -eux
+
+        echo "🔄 Installing required tools"
+        apt-get update -y
+        apt-get install -y git wget
+        rm -rf /var/lib/apt/lists/*
+
+        HARNESS_DIR=$(workspaces.source.path)/harnesses
+
+        if [ ! -d ${HARNESS_DIR}/${HARNESS}.venv ]; then
+          python -m venv ${HARNESS_DIR}/${HARNESS}.venv
+        fi
+        source ${HARNESS_DIR}/${HARNESS}.venv/bin/activate
+
+        echo "📦 Installing ${HARNESS}"
+        pip install "git+${GIT_REPO_URL}@${GIT_COMMIT}"
+        echo "✔ Done installing ${HARNESS}"
+        pip list
+
+        echo "📦 Installing analysis tools"
+        wget -q https://raw.githubusercontent.com/llm-d/llm-d-benchmark/refs/heads/main/build/requirements-analysis.txt -O /workspace/requirements-analysis.txt
+        pip install -r /workspace/requirements-analysis.txt
+        echo "✔ Done installing analysis tools"
+        pip list

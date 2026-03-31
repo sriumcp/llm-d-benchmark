@@ -1,0 +1,2295 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: inference-scheduling
+spec:
+  description: Sample Inference Scheduling Experiment
+  workspaces:
+  - name: model-cache
+    description: Workspace to hold models shared by model servers
+  - name: results
+    description: Workspace of results from workload generators
+  - name: credentials
+    description: Optional workspace with credentials if needed by a task
+  tasks:
+  - name: log-start
+    taskRef:
+      name: echo
+    params:
+    - name: text
+      value: 'Starting pipeline "inference-scheduling"
+
+        Assumes that secret/hf-secret is defined with field HF_TOKEN'
+  - name: deploy-gateway
+    taskRef:
+      name: deploy-helm
+    results:
+    - name: gateway
+      type: string
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1046e7c80>
+    - name: repo
+      value: llm-d-infra
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-infra/
+  - name: deploy-gaie-inf-sche-none-yaml
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-inf-sche-none-yaml
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1046e7cc0>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=qwen-qwen3-0-6b-inf-sche-none-yaml
+      - inferenceExtension.pluginConfigFile="inf-sche-none-yaml"
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: HF_TOKEN
+  - name: deploy-model-inf-sche-none-yaml
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-inf-sche-none-yaml
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1046e7c40>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=Qwen/Qwen3-0.6B
+      - modelArtifacts.uri="pvc://model-pvc/models/Qwen/Qwen3-0.6B"
+      - fullnameOverride=qwen-qwen3-0-6b-inf-sche-none-yaml
+      - routing.inferencePool.name="$(tasks.gaie-inf-sche-none-yaml.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-inf-sche-none-yaml.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-inf-sche-none-yaml.results.inferencepool)"
+  - name: deploy-httproute-inf-sche-none-yaml
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-inf-sche-none-yaml
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-inf-sche-none-yaml.results.inferencepool)
+    - name: model_label
+      value: qwen-qwen3-0-6b-inf-sche-none-yaml
+  - name: create-workload-profile-inf-sche-none-yaml-0
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '100'
+  - name: run-workload-inf-sche-none-yaml-0
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-none-yaml-0
+    - run-workload-profile-inf-sche-none-yaml--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-none-yaml-0.results.profile)
+    - name: path
+      value: inf-sche-none-yaml-100_100
+  - name: tranform-workload-results-inf-sche-none-yaml-0
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-none-yaml-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-none-yaml-100_100
+    - name: targetPath
+      value: inf-sche-none-yaml-100_100/converted
+  - name: create-workload-profile-inf-sche-none-yaml-1
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '200'
+        question_len: '100'
+  - name: run-workload-inf-sche-none-yaml-1
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-none-yaml-1
+    - run-workload-profile-inf-sche-none-yaml-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-none-yaml-1.results.profile)
+    - name: path
+      value: inf-sche-none-yaml-200_100
+  - name: tranform-workload-results-inf-sche-none-yaml-1
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-none-yaml-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-none-yaml-200_100
+    - name: targetPath
+      value: inf-sche-none-yaml-200_100/converted
+  - name: create-workload-profile-inf-sche-none-yaml-2
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '100'
+  - name: run-workload-inf-sche-none-yaml-2
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-none-yaml-2
+    - run-workload-profile-inf-sche-none-yaml-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-none-yaml-2.results.profile)
+    - name: path
+      value: inf-sche-none-yaml-1000_100
+  - name: tranform-workload-results-inf-sche-none-yaml-2
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-none-yaml-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-none-yaml-1000_100
+    - name: targetPath
+      value: inf-sche-none-yaml-1000_100/converted
+  - name: create-workload-profile-inf-sche-none-yaml-3
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '300'
+  - name: run-workload-inf-sche-none-yaml-3
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-none-yaml-3
+    - run-workload-profile-inf-sche-none-yaml-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-none-yaml-3.results.profile)
+    - name: path
+      value: inf-sche-none-yaml-100_300
+  - name: tranform-workload-results-inf-sche-none-yaml-3
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-none-yaml-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-none-yaml-100_300
+    - name: targetPath
+      value: inf-sche-none-yaml-100_300/converted
+  - name: create-workload-profile-inf-sche-none-yaml-4
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '300'
+        question_len: '300'
+  - name: run-workload-inf-sche-none-yaml-4
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-none-yaml-4
+    - run-workload-profile-inf-sche-none-yaml-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-none-yaml-4.results.profile)
+    - name: path
+      value: inf-sche-none-yaml-300_300
+  - name: tranform-workload-results-inf-sche-none-yaml-4
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-none-yaml-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-none-yaml-300_300
+    - name: targetPath
+      value: inf-sche-none-yaml-300_300/converted
+  - name: create-workload-profile-inf-sche-none-yaml-5
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '300'
+  - name: run-workload-inf-sche-none-yaml-5
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-none-yaml-5
+    - run-workload-profile-inf-sche-none-yaml-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-none-yaml-5.results.profile)
+    - name: path
+      value: inf-sche-none-yaml-1000_300
+  - name: tranform-workload-results-inf-sche-none-yaml-5
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-none-yaml-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-none-yaml-1000_300
+    - name: targetPath
+      value: inf-sche-none-yaml-1000_300/converted
+  - name: create-workload-profile-inf-sche-none-yaml-6
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '1000'
+  - name: run-workload-inf-sche-none-yaml-6
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-none-yaml-6
+    - run-workload-profile-inf-sche-none-yaml-5
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-none-yaml-6.results.profile)
+    - name: path
+      value: inf-sche-none-yaml-100_1000
+  - name: tranform-workload-results-inf-sche-none-yaml-6
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-none-yaml-6
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-none-yaml-100_1000
+    - name: targetPath
+      value: inf-sche-none-yaml-100_1000/converted
+  - name: create-workload-profile-inf-sche-none-yaml-7
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '300'
+        question_len: '1000'
+  - name: run-workload-inf-sche-none-yaml-7
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-none-yaml-7
+    - run-workload-profile-inf-sche-none-yaml-6
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-none-yaml-7.results.profile)
+    - name: path
+      value: inf-sche-none-yaml-300_1000
+  - name: tranform-workload-results-inf-sche-none-yaml-7
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-none-yaml-7
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-none-yaml-300_1000
+    - name: targetPath
+      value: inf-sche-none-yaml-300_1000/converted
+  - name: create-workload-profile-inf-sche-none-yaml-8
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '1000'
+  - name: run-workload-inf-sche-none-yaml-8
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-none-yaml-8
+    - run-workload-profile-inf-sche-none-yaml-7
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-none-yaml-8.results.profile)
+    - name: path
+      value: inf-sche-none-yaml-1000_1000
+  - name: tranform-workload-results-inf-sche-none-yaml-8
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-none-yaml-8
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-none-yaml-1000_1000
+    - name: targetPath
+      value: inf-sche-none-yaml-1000_1000/converted
+  - name: delete-model-inf-sche-none-yaml
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_inf-sche-none-yaml_1000_1000
+    params:
+    - name: releaseName
+      value: model-inf-sche-none-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-inf-sche-none-yaml
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_inf-sche-none-yaml_1000_1000
+    params:
+    - name: releaseName
+      value: model-inf-sche-none-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: deploy-gaie-inf-sche-prefix-yaml
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-inf-sche-prefix-yaml
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1046e7cc0>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=qwen-qwen3-0-6b-inf-sche-prefix-yaml
+      - inferenceExtension.pluginConfigFile="inf-sche-prefix-yaml"
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: HF_TOKEN
+  - name: deploy-model-inf-sche-prefix-yaml
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-inf-sche-prefix-yaml
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1046e7c40>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=Qwen/Qwen3-0.6B
+      - modelArtifacts.uri="pvc://model-pvc/models/Qwen/Qwen3-0.6B"
+      - fullnameOverride=qwen-qwen3-0-6b-inf-sche-prefix-yaml
+      - routing.inferencePool.name="$(tasks.gaie-inf-sche-prefix-yaml.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-inf-sche-prefix-yaml.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-inf-sche-prefix-yaml.results.inferencepool)"
+  - name: deploy-httproute-inf-sche-prefix-yaml
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-inf-sche-prefix-yaml
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-inf-sche-prefix-yaml.results.inferencepool)
+    - name: model_label
+      value: qwen-qwen3-0-6b-inf-sche-prefix-yaml
+  - name: create-workload-profile-inf-sche-prefix-yaml-0
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '100'
+  - name: run-workload-inf-sche-prefix-yaml-0
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-prefix-yaml-0
+    - run-workload-profile-inf-sche-prefix-yaml--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-prefix-yaml-0.results.profile)
+    - name: path
+      value: inf-sche-prefix-yaml-100_100
+  - name: tranform-workload-results-inf-sche-prefix-yaml-0
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-prefix-yaml-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-prefix-yaml-100_100
+    - name: targetPath
+      value: inf-sche-prefix-yaml-100_100/converted
+  - name: create-workload-profile-inf-sche-prefix-yaml-1
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '200'
+        question_len: '100'
+  - name: run-workload-inf-sche-prefix-yaml-1
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-prefix-yaml-1
+    - run-workload-profile-inf-sche-prefix-yaml-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-prefix-yaml-1.results.profile)
+    - name: path
+      value: inf-sche-prefix-yaml-200_100
+  - name: tranform-workload-results-inf-sche-prefix-yaml-1
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-prefix-yaml-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-prefix-yaml-200_100
+    - name: targetPath
+      value: inf-sche-prefix-yaml-200_100/converted
+  - name: create-workload-profile-inf-sche-prefix-yaml-2
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '100'
+  - name: run-workload-inf-sche-prefix-yaml-2
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-prefix-yaml-2
+    - run-workload-profile-inf-sche-prefix-yaml-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-prefix-yaml-2.results.profile)
+    - name: path
+      value: inf-sche-prefix-yaml-1000_100
+  - name: tranform-workload-results-inf-sche-prefix-yaml-2
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-prefix-yaml-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-prefix-yaml-1000_100
+    - name: targetPath
+      value: inf-sche-prefix-yaml-1000_100/converted
+  - name: create-workload-profile-inf-sche-prefix-yaml-3
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '300'
+  - name: run-workload-inf-sche-prefix-yaml-3
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-prefix-yaml-3
+    - run-workload-profile-inf-sche-prefix-yaml-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-prefix-yaml-3.results.profile)
+    - name: path
+      value: inf-sche-prefix-yaml-100_300
+  - name: tranform-workload-results-inf-sche-prefix-yaml-3
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-prefix-yaml-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-prefix-yaml-100_300
+    - name: targetPath
+      value: inf-sche-prefix-yaml-100_300/converted
+  - name: create-workload-profile-inf-sche-prefix-yaml-4
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '300'
+        question_len: '300'
+  - name: run-workload-inf-sche-prefix-yaml-4
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-prefix-yaml-4
+    - run-workload-profile-inf-sche-prefix-yaml-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-prefix-yaml-4.results.profile)
+    - name: path
+      value: inf-sche-prefix-yaml-300_300
+  - name: tranform-workload-results-inf-sche-prefix-yaml-4
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-prefix-yaml-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-prefix-yaml-300_300
+    - name: targetPath
+      value: inf-sche-prefix-yaml-300_300/converted
+  - name: create-workload-profile-inf-sche-prefix-yaml-5
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '300'
+  - name: run-workload-inf-sche-prefix-yaml-5
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-prefix-yaml-5
+    - run-workload-profile-inf-sche-prefix-yaml-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-prefix-yaml-5.results.profile)
+    - name: path
+      value: inf-sche-prefix-yaml-1000_300
+  - name: tranform-workload-results-inf-sche-prefix-yaml-5
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-prefix-yaml-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-prefix-yaml-1000_300
+    - name: targetPath
+      value: inf-sche-prefix-yaml-1000_300/converted
+  - name: create-workload-profile-inf-sche-prefix-yaml-6
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '1000'
+  - name: run-workload-inf-sche-prefix-yaml-6
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-prefix-yaml-6
+    - run-workload-profile-inf-sche-prefix-yaml-5
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-prefix-yaml-6.results.profile)
+    - name: path
+      value: inf-sche-prefix-yaml-100_1000
+  - name: tranform-workload-results-inf-sche-prefix-yaml-6
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-prefix-yaml-6
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-prefix-yaml-100_1000
+    - name: targetPath
+      value: inf-sche-prefix-yaml-100_1000/converted
+  - name: create-workload-profile-inf-sche-prefix-yaml-7
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '300'
+        question_len: '1000'
+  - name: run-workload-inf-sche-prefix-yaml-7
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-prefix-yaml-7
+    - run-workload-profile-inf-sche-prefix-yaml-6
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-prefix-yaml-7.results.profile)
+    - name: path
+      value: inf-sche-prefix-yaml-300_1000
+  - name: tranform-workload-results-inf-sche-prefix-yaml-7
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-prefix-yaml-7
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-prefix-yaml-300_1000
+    - name: targetPath
+      value: inf-sche-prefix-yaml-300_1000/converted
+  - name: create-workload-profile-inf-sche-prefix-yaml-8
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '1000'
+  - name: run-workload-inf-sche-prefix-yaml-8
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-prefix-yaml-8
+    - run-workload-profile-inf-sche-prefix-yaml-7
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-prefix-yaml-8.results.profile)
+    - name: path
+      value: inf-sche-prefix-yaml-1000_1000
+  - name: tranform-workload-results-inf-sche-prefix-yaml-8
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-prefix-yaml-8
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-prefix-yaml-1000_1000
+    - name: targetPath
+      value: inf-sche-prefix-yaml-1000_1000/converted
+  - name: delete-model-inf-sche-prefix-yaml
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_inf-sche-prefix-yaml_1000_1000
+    params:
+    - name: releaseName
+      value: model-inf-sche-prefix-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-inf-sche-prefix-yaml
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_inf-sche-prefix-yaml_1000_1000
+    params:
+    - name: releaseName
+      value: model-inf-sche-prefix-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: deploy-gaie-inf-sche-kv-yaml
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-inf-sche-kv-yaml
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1046e7cc0>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=qwen-qwen3-0-6b-inf-sche-kv-yaml
+      - inferenceExtension.pluginConfigFile="inf-sche-kv-yaml"
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: HF_TOKEN
+  - name: deploy-model-inf-sche-kv-yaml
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-inf-sche-kv-yaml
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1046e7c40>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=Qwen/Qwen3-0.6B
+      - modelArtifacts.uri="pvc://model-pvc/models/Qwen/Qwen3-0.6B"
+      - fullnameOverride=qwen-qwen3-0-6b-inf-sche-kv-yaml
+      - routing.inferencePool.name="$(tasks.gaie-inf-sche-kv-yaml.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-inf-sche-kv-yaml.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-inf-sche-kv-yaml.results.inferencepool)"
+  - name: deploy-httproute-inf-sche-kv-yaml
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-inf-sche-kv-yaml
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-inf-sche-kv-yaml.results.inferencepool)
+    - name: model_label
+      value: qwen-qwen3-0-6b-inf-sche-kv-yaml
+  - name: create-workload-profile-inf-sche-kv-yaml-0
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '100'
+  - name: run-workload-inf-sche-kv-yaml-0
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-kv-yaml-0
+    - run-workload-profile-inf-sche-kv-yaml--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-kv-yaml-0.results.profile)
+    - name: path
+      value: inf-sche-kv-yaml-100_100
+  - name: tranform-workload-results-inf-sche-kv-yaml-0
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-kv-yaml-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-kv-yaml-100_100
+    - name: targetPath
+      value: inf-sche-kv-yaml-100_100/converted
+  - name: create-workload-profile-inf-sche-kv-yaml-1
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '200'
+        question_len: '100'
+  - name: run-workload-inf-sche-kv-yaml-1
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-kv-yaml-1
+    - run-workload-profile-inf-sche-kv-yaml-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-kv-yaml-1.results.profile)
+    - name: path
+      value: inf-sche-kv-yaml-200_100
+  - name: tranform-workload-results-inf-sche-kv-yaml-1
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-kv-yaml-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-kv-yaml-200_100
+    - name: targetPath
+      value: inf-sche-kv-yaml-200_100/converted
+  - name: create-workload-profile-inf-sche-kv-yaml-2
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '100'
+  - name: run-workload-inf-sche-kv-yaml-2
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-kv-yaml-2
+    - run-workload-profile-inf-sche-kv-yaml-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-kv-yaml-2.results.profile)
+    - name: path
+      value: inf-sche-kv-yaml-1000_100
+  - name: tranform-workload-results-inf-sche-kv-yaml-2
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-kv-yaml-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-kv-yaml-1000_100
+    - name: targetPath
+      value: inf-sche-kv-yaml-1000_100/converted
+  - name: create-workload-profile-inf-sche-kv-yaml-3
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '300'
+  - name: run-workload-inf-sche-kv-yaml-3
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-kv-yaml-3
+    - run-workload-profile-inf-sche-kv-yaml-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-kv-yaml-3.results.profile)
+    - name: path
+      value: inf-sche-kv-yaml-100_300
+  - name: tranform-workload-results-inf-sche-kv-yaml-3
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-kv-yaml-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-kv-yaml-100_300
+    - name: targetPath
+      value: inf-sche-kv-yaml-100_300/converted
+  - name: create-workload-profile-inf-sche-kv-yaml-4
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '300'
+        question_len: '300'
+  - name: run-workload-inf-sche-kv-yaml-4
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-kv-yaml-4
+    - run-workload-profile-inf-sche-kv-yaml-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-kv-yaml-4.results.profile)
+    - name: path
+      value: inf-sche-kv-yaml-300_300
+  - name: tranform-workload-results-inf-sche-kv-yaml-4
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-kv-yaml-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-kv-yaml-300_300
+    - name: targetPath
+      value: inf-sche-kv-yaml-300_300/converted
+  - name: create-workload-profile-inf-sche-kv-yaml-5
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '300'
+  - name: run-workload-inf-sche-kv-yaml-5
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-kv-yaml-5
+    - run-workload-profile-inf-sche-kv-yaml-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-kv-yaml-5.results.profile)
+    - name: path
+      value: inf-sche-kv-yaml-1000_300
+  - name: tranform-workload-results-inf-sche-kv-yaml-5
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-kv-yaml-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-kv-yaml-1000_300
+    - name: targetPath
+      value: inf-sche-kv-yaml-1000_300/converted
+  - name: create-workload-profile-inf-sche-kv-yaml-6
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '1000'
+  - name: run-workload-inf-sche-kv-yaml-6
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-kv-yaml-6
+    - run-workload-profile-inf-sche-kv-yaml-5
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-kv-yaml-6.results.profile)
+    - name: path
+      value: inf-sche-kv-yaml-100_1000
+  - name: tranform-workload-results-inf-sche-kv-yaml-6
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-kv-yaml-6
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-kv-yaml-100_1000
+    - name: targetPath
+      value: inf-sche-kv-yaml-100_1000/converted
+  - name: create-workload-profile-inf-sche-kv-yaml-7
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '300'
+        question_len: '1000'
+  - name: run-workload-inf-sche-kv-yaml-7
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-kv-yaml-7
+    - run-workload-profile-inf-sche-kv-yaml-6
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-kv-yaml-7.results.profile)
+    - name: path
+      value: inf-sche-kv-yaml-300_1000
+  - name: tranform-workload-results-inf-sche-kv-yaml-7
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-kv-yaml-7
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-kv-yaml-300_1000
+    - name: targetPath
+      value: inf-sche-kv-yaml-300_1000/converted
+  - name: create-workload-profile-inf-sche-kv-yaml-8
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '1000'
+  - name: run-workload-inf-sche-kv-yaml-8
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-kv-yaml-8
+    - run-workload-profile-inf-sche-kv-yaml-7
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-kv-yaml-8.results.profile)
+    - name: path
+      value: inf-sche-kv-yaml-1000_1000
+  - name: tranform-workload-results-inf-sche-kv-yaml-8
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-kv-yaml-8
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-kv-yaml-1000_1000
+    - name: targetPath
+      value: inf-sche-kv-yaml-1000_1000/converted
+  - name: delete-model-inf-sche-kv-yaml
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_inf-sche-kv-yaml_1000_1000
+    params:
+    - name: releaseName
+      value: model-inf-sche-kv-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-inf-sche-kv-yaml
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_inf-sche-kv-yaml_1000_1000
+    params:
+    - name: releaseName
+      value: model-inf-sche-kv-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: deploy-gaie-inf-sche-queue-yaml
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-inf-sche-queue-yaml
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1046e7cc0>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=qwen-qwen3-0-6b-inf-sche-queue-yaml
+      - inferenceExtension.pluginConfigFile="inf-sche-queue-yaml"
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: HF_TOKEN
+  - name: deploy-model-inf-sche-queue-yaml
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-inf-sche-queue-yaml
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1046e7c40>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=Qwen/Qwen3-0.6B
+      - modelArtifacts.uri="pvc://model-pvc/models/Qwen/Qwen3-0.6B"
+      - fullnameOverride=qwen-qwen3-0-6b-inf-sche-queue-yaml
+      - routing.inferencePool.name="$(tasks.gaie-inf-sche-queue-yaml.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-inf-sche-queue-yaml.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-inf-sche-queue-yaml.results.inferencepool)"
+  - name: deploy-httproute-inf-sche-queue-yaml
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-inf-sche-queue-yaml
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-inf-sche-queue-yaml.results.inferencepool)
+    - name: model_label
+      value: qwen-qwen3-0-6b-inf-sche-queue-yaml
+  - name: create-workload-profile-inf-sche-queue-yaml-0
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '100'
+  - name: run-workload-inf-sche-queue-yaml-0
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-queue-yaml-0
+    - run-workload-profile-inf-sche-queue-yaml--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-queue-yaml-0.results.profile)
+    - name: path
+      value: inf-sche-queue-yaml-100_100
+  - name: tranform-workload-results-inf-sche-queue-yaml-0
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-queue-yaml-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-queue-yaml-100_100
+    - name: targetPath
+      value: inf-sche-queue-yaml-100_100/converted
+  - name: create-workload-profile-inf-sche-queue-yaml-1
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '200'
+        question_len: '100'
+  - name: run-workload-inf-sche-queue-yaml-1
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-queue-yaml-1
+    - run-workload-profile-inf-sche-queue-yaml-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-queue-yaml-1.results.profile)
+    - name: path
+      value: inf-sche-queue-yaml-200_100
+  - name: tranform-workload-results-inf-sche-queue-yaml-1
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-queue-yaml-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-queue-yaml-200_100
+    - name: targetPath
+      value: inf-sche-queue-yaml-200_100/converted
+  - name: create-workload-profile-inf-sche-queue-yaml-2
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '100'
+  - name: run-workload-inf-sche-queue-yaml-2
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-queue-yaml-2
+    - run-workload-profile-inf-sche-queue-yaml-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-queue-yaml-2.results.profile)
+    - name: path
+      value: inf-sche-queue-yaml-1000_100
+  - name: tranform-workload-results-inf-sche-queue-yaml-2
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-queue-yaml-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-queue-yaml-1000_100
+    - name: targetPath
+      value: inf-sche-queue-yaml-1000_100/converted
+  - name: create-workload-profile-inf-sche-queue-yaml-3
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '300'
+  - name: run-workload-inf-sche-queue-yaml-3
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-queue-yaml-3
+    - run-workload-profile-inf-sche-queue-yaml-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-queue-yaml-3.results.profile)
+    - name: path
+      value: inf-sche-queue-yaml-100_300
+  - name: tranform-workload-results-inf-sche-queue-yaml-3
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-queue-yaml-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-queue-yaml-100_300
+    - name: targetPath
+      value: inf-sche-queue-yaml-100_300/converted
+  - name: create-workload-profile-inf-sche-queue-yaml-4
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '300'
+        question_len: '300'
+  - name: run-workload-inf-sche-queue-yaml-4
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-queue-yaml-4
+    - run-workload-profile-inf-sche-queue-yaml-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-queue-yaml-4.results.profile)
+    - name: path
+      value: inf-sche-queue-yaml-300_300
+  - name: tranform-workload-results-inf-sche-queue-yaml-4
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-queue-yaml-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-queue-yaml-300_300
+    - name: targetPath
+      value: inf-sche-queue-yaml-300_300/converted
+  - name: create-workload-profile-inf-sche-queue-yaml-5
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '300'
+  - name: run-workload-inf-sche-queue-yaml-5
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-queue-yaml-5
+    - run-workload-profile-inf-sche-queue-yaml-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-queue-yaml-5.results.profile)
+    - name: path
+      value: inf-sche-queue-yaml-1000_300
+  - name: tranform-workload-results-inf-sche-queue-yaml-5
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-queue-yaml-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-queue-yaml-1000_300
+    - name: targetPath
+      value: inf-sche-queue-yaml-1000_300/converted
+  - name: create-workload-profile-inf-sche-queue-yaml-6
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '100'
+        question_len: '1000'
+  - name: run-workload-inf-sche-queue-yaml-6
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-queue-yaml-6
+    - run-workload-profile-inf-sche-queue-yaml-5
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-queue-yaml-6.results.profile)
+    - name: path
+      value: inf-sche-queue-yaml-100_1000
+  - name: tranform-workload-results-inf-sche-queue-yaml-6
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-queue-yaml-6
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-queue-yaml-100_1000
+    - name: targetPath
+      value: inf-sche-queue-yaml-100_1000/converted
+  - name: create-workload-profile-inf-sche-queue-yaml-7
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '300'
+        question_len: '1000'
+  - name: run-workload-inf-sche-queue-yaml-7
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-queue-yaml-7
+    - run-workload-profile-inf-sche-queue-yaml-6
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-queue-yaml-7.results.profile)
+    - name: path
+      value: inf-sche-queue-yaml-300_1000
+  - name: tranform-workload-results-inf-sche-queue-yaml-7
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-queue-yaml-7
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-queue-yaml-300_1000
+    - name: targetPath
+      value: inf-sche-queue-yaml-300_1000/converted
+  - name: create-workload-profile-inf-sche-queue-yaml-8
+    taskRef:
+      name: create-workload-profile-inference-perf
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profileTemplate
+      value: shared_prefix_synthetic.yaml
+    - name: model
+      value: Qwen/Qwen3-0.6B
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        output_len: '1000'
+        question_len: '1000'
+  - name: run-workload-inf-sche-queue-yaml-8
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - create-workload-profile-inf-sche-queue-yaml-8
+    - run-workload-profile-inf-sche-queue-yaml-7
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: inference-perf
+    - name: profile
+      value: $(tasks.create-workload-profile-inf-sche-queue-yaml-8.results.profile)
+    - name: path
+      value: inf-sche-queue-yaml-1000_1000
+  - name: tranform-workload-results-inf-sche-queue-yaml-8
+    taskRef:
+      name: transform-results-inference-perf
+    runAfter:
+    - run-workload-inf-sche-queue-yaml-8
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: inf-sche-queue-yaml-1000_1000
+    - name: targetPath
+      value: inf-sche-queue-yaml-1000_1000/converted
+  - name: delete-model-inf-sche-queue-yaml
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_inf-sche-queue-yaml_1000_1000
+    params:
+    - name: releaseName
+      value: model-inf-sche-queue-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-inf-sche-queue-yaml
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_inf-sche-queue-yaml_1000_1000
+    params:
+    - name: releaseName
+      value: model-inf-sche-queue-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: document
+    taskRef:
+      name: document
+    runAfter:
+    - delete-model-inf-sche-none-yaml
+    - delete-gaie-inf-sche-none-yaml
+    - delete-model-inf-sche-prefix-yaml
+    - delete-gaie-inf-sche-prefix-yaml
+    - delete-model-inf-sche-kv-yaml
+    - delete-gaie-inf-sche-kv-yaml
+    - delete-model-inf-sche-queue-yaml
+    - delete-gaie-inf-sche-queue-yaml
+    workspaces:
+    - name: results
+  - name: upload
+    taskRef:
+      name: upload-s3
+    runAfter:
+    - document
+    params:
+    - name: paths
+      value:
+      - inf-sche-none-yaml-100_100
+      - inf-sche-none-yaml-100_100/converted
+      - inf-sche-none-yaml-200_100
+      - inf-sche-none-yaml-200_100/converted
+      - inf-sche-none-yaml-1000_100
+      - inf-sche-none-yaml-1000_100/converted
+      - inf-sche-none-yaml-100_300
+      - inf-sche-none-yaml-100_300/converted
+      - inf-sche-none-yaml-300_300
+      - inf-sche-none-yaml-300_300/converted
+      - inf-sche-none-yaml-1000_300
+      - inf-sche-none-yaml-1000_300/converted
+      - inf-sche-none-yaml-100_1000
+      - inf-sche-none-yaml-100_1000/converted
+      - inf-sche-none-yaml-300_1000
+      - inf-sche-none-yaml-300_1000/converted
+      - inf-sche-none-yaml-1000_1000
+      - inf-sche-none-yaml-1000_1000/converted
+      - inf-sche-prefix-yaml-100_100
+      - inf-sche-prefix-yaml-100_100/converted
+      - inf-sche-prefix-yaml-200_100
+      - inf-sche-prefix-yaml-200_100/converted
+      - inf-sche-prefix-yaml-1000_100
+      - inf-sche-prefix-yaml-1000_100/converted
+      - inf-sche-prefix-yaml-100_300
+      - inf-sche-prefix-yaml-100_300/converted
+      - inf-sche-prefix-yaml-300_300
+      - inf-sche-prefix-yaml-300_300/converted
+      - inf-sche-prefix-yaml-1000_300
+      - inf-sche-prefix-yaml-1000_300/converted
+      - inf-sche-prefix-yaml-100_1000
+      - inf-sche-prefix-yaml-100_1000/converted
+      - inf-sche-prefix-yaml-300_1000
+      - inf-sche-prefix-yaml-300_1000/converted
+      - inf-sche-prefix-yaml-1000_1000
+      - inf-sche-prefix-yaml-1000_1000/converted
+      - inf-sche-kv-yaml-100_100
+      - inf-sche-kv-yaml-100_100/converted
+      - inf-sche-kv-yaml-200_100
+      - inf-sche-kv-yaml-200_100/converted
+      - inf-sche-kv-yaml-1000_100
+      - inf-sche-kv-yaml-1000_100/converted
+      - inf-sche-kv-yaml-100_300
+      - inf-sche-kv-yaml-100_300/converted
+      - inf-sche-kv-yaml-300_300
+      - inf-sche-kv-yaml-300_300/converted
+      - inf-sche-kv-yaml-1000_300
+      - inf-sche-kv-yaml-1000_300/converted
+      - inf-sche-kv-yaml-100_1000
+      - inf-sche-kv-yaml-100_1000/converted
+      - inf-sche-kv-yaml-300_1000
+      - inf-sche-kv-yaml-300_1000/converted
+      - inf-sche-kv-yaml-1000_1000
+      - inf-sche-kv-yaml-1000_1000/converted
+      - inf-sche-queue-yaml-100_100
+      - inf-sche-queue-yaml-100_100/converted
+      - inf-sche-queue-yaml-200_100
+      - inf-sche-queue-yaml-200_100/converted
+      - inf-sche-queue-yaml-1000_100
+      - inf-sche-queue-yaml-1000_100/converted
+      - inf-sche-queue-yaml-100_300
+      - inf-sche-queue-yaml-100_300/converted
+      - inf-sche-queue-yaml-300_300
+      - inf-sche-queue-yaml-300_300/converted
+      - inf-sche-queue-yaml-1000_300
+      - inf-sche-queue-yaml-1000_300/converted
+      - inf-sche-queue-yaml-100_1000
+      - inf-sche-queue-yaml-100_1000/converted
+      - inf-sche-queue-yaml-300_1000
+      - inf-sche-queue-yaml-300_1000/converted
+      - inf-sche-queue-yaml-1000_1000
+      - inf-sche-queue-yaml-1000_1000/converted
+    - name: target
+      value:
+        bucket: cloud-object-storage-cos-standard-ere
+        endpoint: https://s3.us-east.cloud-object-storage.appdomain.cloud
+    workspaces:
+    - name: source
+    - name: credentials
+  finally:
+  - name: delete-model-inf-sche-none-yaml
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-inf-sche-none-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-inf-sche-none-yaml
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-inf-sche-none-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-inf-sche-none-yaml
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-model-inf-sche-prefix-yaml
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-inf-sche-prefix-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-inf-sche-prefix-yaml
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-inf-sche-prefix-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-inf-sche-prefix-yaml
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-model-inf-sche-kv-yaml
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-inf-sche-kv-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-inf-sche-kv-yaml
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-inf-sche-kv-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-inf-sche-kv-yaml
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-model-inf-sche-queue-yaml
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-inf-sche-queue-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-inf-sche-queue-yaml
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-inf-sche-queue-yaml
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-inf-sche-queue-yaml
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)

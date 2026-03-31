@@ -1,0 +1,75 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-gaie
+spec:
+  description: |
+    Configurte Kubernetes Gateway API Inference Extension for a model stack.
+
+  results:
+    - name: inferencepool
+      description: InferencePool name
+
+  params:
+    - { name: modelLabel, type: string }
+    - { name: config, type: string }
+    - { name: overrides, type: string, default: "" }
+    - { name: namespace, type: string }
+
+  steps:
+
+    - name: augment-overrides
+      results:
+        - { name: merged-overrides }
+      image: alpine:3.20
+      script: |
+        #!/bin/sh
+        set -eu
+
+        printf "%s" "$(params.overrides)" > $(step.results.merged-overrides.path)
+        echo "inferencePool.modelServers.matchLabels.\"llm-d.ai/model\"=$(params.modelLabel)" >> $(step.results.merged-overrides.path)
+
+    - name: apply-overrides
+      ref:
+        name: apply-overrides
+      params:
+        - name: inputYaml
+          value: "$(params.config)"
+        - name: overrides
+          value: "$(steps.augment-overrides.results.merged-overrides)"
+
+    - name: install-gaie
+      ref: 
+        name: helm-upgrade-install
+      params:
+        - name: releaseName
+          value: $(params.modelLabel)-gaie
+
+        - name: chart
+          value: oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool
+        - name: version
+          value: v1.0.1
+
+        - name: namespace
+          value: $(params.namespace)
+        - name: valuesYamlUrl
+          value: "/workspace/output.yaml"
+
+        - name: wait
+          value: "false"
+        - name: timeout
+          value: 15m
+
+    - name: record-results
+      image: alpine:3.20
+      script: |
+        #!/bin/sh
+        set -eu
+
+        echo "record-results called"
+
+        # InferencePool name is the helm release name
+        RELEASE="$(params.modelLabel)-gaie"
+        printf "%s" "${RELEASE}" > $(results.inferencepool.path)
+
+        echo "record-results completed"

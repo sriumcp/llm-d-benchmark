@@ -1,0 +1,211 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: blis-rh-train
+spec:
+  description: Training pipeline for BLIS scenario 6
+  workspaces:
+  - name: data
+    description: Cache of training results
+  - name: target-credentials
+    description: Secret workspace containing upload target credentials.  For example, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for s3.
+  params:
+  - name: experimentId
+    type: string
+    description: Identifier for experiment execution
+  - name: namespace
+    type: string
+    description: Kubernetes namespace where training will execute
+  - name: num_iter
+    type: string
+    description: Number of BLIS training iterations
+  tasks:
+  - name: train-blis-rh-0
+    taskRef:
+      name: train-blis-rh
+    timeout: 350m
+    workspaces:
+    - name: data
+    params:
+    - name: LLM_NAME
+      value: redhatai/phi-4-fp8-dynamic
+    - name: TP
+      value: '1'
+    - name: GPU_TYPE
+      value: H100
+    - name: VLLM_VERSION
+      value: vllm/vllm-openai:v0.8.4
+    - name: TRAINING_FILEPATH
+      value: blis_rh_final.xlsx
+    - name: num_iter
+      value: $(params.num_iter)
+    - name: results_dir
+      value: variation-redhatai-phi-4-fp8-dynamic-1-H100-vllm-vllm-openai-v0-8-4
+  - name: train-blis-rh-1
+    taskRef:
+      name: train-blis-rh
+    timeout: 350m
+    workspaces:
+    - name: data
+    params:
+    - name: LLM_NAME
+      value: redhatai/phi-4-fp8-dynamic
+    - name: TP
+      value: '2'
+    - name: GPU_TYPE
+      value: H100
+    - name: VLLM_VERSION
+      value: vllm/vllm-openai:v0.8.4
+    - name: TRAINING_FILEPATH
+      value: blis_rh_final.xlsx
+    - name: num_iter
+      value: $(params.num_iter)
+    - name: results_dir
+      value: variation-redhatai-phi-4-fp8-dynamic-2-H100-vllm-vllm-openai-v0-8-4
+  - name: train-blis-rh-2
+    taskRef:
+      name: train-blis-rh
+    timeout: 350m
+    workspaces:
+    - name: data
+    params:
+    - name: LLM_NAME
+      value: redhatai/phi-4-quantized.w4a16
+    - name: TP
+      value: '1'
+    - name: GPU_TYPE
+      value: H100
+    - name: VLLM_VERSION
+      value: vllm/vllm-openai:v0.8.4
+    - name: TRAINING_FILEPATH
+      value: blis_rh_final.xlsx
+    - name: num_iter
+      value: $(params.num_iter)
+    - name: results_dir
+      value: variation-redhatai-phi-4-quantized-w4a16-1-H100-vllm-vllm-openai-v0-8-4
+  - name: train-blis-rh-3
+    taskRef:
+      name: train-blis-rh
+    timeout: 350m
+    workspaces:
+    - name: data
+    params:
+    - name: LLM_NAME
+      value: redhatai/phi-4-quantized.w4a16
+    - name: TP
+      value: '2'
+    - name: GPU_TYPE
+      value: H100
+    - name: VLLM_VERSION
+      value: vllm/vllm-openai:v0.8.4
+    - name: TRAINING_FILEPATH
+      value: blis_rh_final.xlsx
+    - name: num_iter
+      value: $(params.num_iter)
+    - name: results_dir
+      value: variation-redhatai-phi-4-quantized-w4a16-2-H100-vllm-vllm-openai-v0-8-4
+  - name: train-blis-rh-4
+    taskRef:
+      name: train-blis-rh
+    timeout: 350m
+    workspaces:
+    - name: data
+    params:
+    - name: LLM_NAME
+      value: redhatai/phi-4-quantized.w8a8
+    - name: TP
+      value: '1'
+    - name: GPU_TYPE
+      value: H100
+    - name: VLLM_VERSION
+      value: vllm/vllm-openai:v0.8.4
+    - name: TRAINING_FILEPATH
+      value: blis_rh_final.xlsx
+    - name: num_iter
+      value: $(params.num_iter)
+    - name: results_dir
+      value: variation-redhatai-phi-4-quantized-w8a8-1-H100-vllm-vllm-openai-v0-8-4
+  - name: train-blis-rh-5
+    taskRef:
+      name: train-blis-rh
+    timeout: 350m
+    workspaces:
+    - name: data
+    params:
+    - name: LLM_NAME
+      value: redhatai/phi-4-quantized.w8a8
+    - name: TP
+      value: '2'
+    - name: GPU_TYPE
+      value: H100
+    - name: VLLM_VERSION
+      value: vllm/vllm-openai:v0.8.4
+    - name: TRAINING_FILEPATH
+      value: blis_rh_final.xlsx
+    - name: num_iter
+      value: $(params.num_iter)
+    - name: results_dir
+      value: variation-redhatai-phi-4-quantized-w8a8-2-H100-vllm-vllm-openai-v0-8-4
+  - name: train-blis-rh-6
+    taskRef:
+      name: train-blis-rh
+    timeout: 350m
+    workspaces:
+    - name: data
+    params:
+    - name: LLM_NAME
+      value: meta-llama/llama-4-maverick-17b-128e-instruct-fp8
+    - name: TP
+      value: '8'
+    - name: GPU_TYPE
+      value: H100
+    - name: VLLM_VERSION
+      value: vllm/vllm-openai:v0.8.4
+    - name: TRAINING_FILEPATH
+      value: blis_rh_final.xlsx
+    - name: num_iter
+      value: $(params.num_iter)
+    - name: results_dir
+      value: variation-meta-llama-llama-4-maverick-17b-128e-instruct-fp8-8-H100-vllm-vllm-openai-v0-8-4
+  - name: train-blis-rh-7
+    taskRef:
+      name: train-blis-rh
+    timeout: 350m
+    workspaces:
+    - name: data
+    params:
+    - name: LLM_NAME
+      value: meta-llama/llama-4-scout-17b-16e-instruct
+    - name: TP
+      value: '4'
+    - name: GPU_TYPE
+      value: H100
+    - name: VLLM_VERSION
+      value: vllm/vllm-openai:v0.8.4
+    - name: TRAINING_FILEPATH
+      value: blis_rh_final.xlsx
+    - name: num_iter
+      value: $(params.num_iter)
+    - name: results_dir
+      value: variation-meta-llama-llama-4-scout-17b-16e-instruct-4-H100-vllm-vllm-openai-v0-8-4
+  - name: train-blis-rh-8
+    taskRef:
+      name: train-blis-rh
+    timeout: 350m
+    workspaces:
+    - name: data
+    params:
+    - name: LLM_NAME
+      value: nvidia/llama-3.1-nemotron-70b-instruct-hf
+    - name: TP
+      value: '4'
+    - name: GPU_TYPE
+      value: H100
+    - name: VLLM_VERSION
+      value: vllm/vllm-openai:v0.8.4
+    - name: TRAINING_FILEPATH
+      value: blis_rh_final.xlsx
+    - name: num_iter
+      value: $(params.num_iter)
+    - name: results_dir
+      value: variation-nvidia-llama-3-1-nemotron-70b-instruct-hf-4-H100-vllm-vllm-openai-v0-8-4

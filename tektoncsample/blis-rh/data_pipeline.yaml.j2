@@ -1,0 +1,61 @@
+# BLIS training pipeline
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: {{ experiment.name | dns }}
+spec:
+  {% if experiment.description is defined and experiment.description %}
+  description: {{ experiment.description }}
+  {% endif %}
+
+  workspaces:
+    - name: data
+      description: Cache of training results
+    - name: target-credentials
+      description: >-
+        Secret workspace containing upload target credentials. 
+        For example, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for s3.
+
+  params:
+    - name: experimentId
+      type: string
+      description: Identifier for experiment execution
+    - name: namespace
+      type: string
+      description: Kubernetes namespace where training will execute
+    - name: num_iter
+      type: string
+      description: Number of BLIS training iterations
+
+  tasks:
+    # Loop: Run stacks (different model engine configurations) in parallel
+    - loopName: per-options
+      foreach:
+        domain:
+          variation_i: {{ enumerate_list(stack.variations) }}
+      tasks:
+        - name: train-blis-rh-{{ variation_i.i }}
+          taskRef: { name: train-blis-rh }
+          timeout: "350m" 
+          workspaces:
+            - name: data
+          params:
+            - name: LLM_NAME
+              value: "{{variation_i.item.LLM_NAME}}"
+            - name: TP
+              value: "{{variation_i.item.TP}}"
+            - name: GPU_TYPE
+              value: "{{variation_i.item.GPU}}"
+            - name: VLLM_VERSION
+              value: "{{variation_i.item.vllm_version}}"
+            - name: TRAINING_FILEPATH
+              value: "blis_rh_final.xlsx"
+            - name: num_iter
+              value: "$(params.num_iter)"
+            - { name: results_dir, value: "variation-{{variation_i.item.LLM_NAME|dns}}-{{variation_i.item.TP}}-{{variation_i.item.GPU}}-{{variation_i.item.vllm_version|dns}}" }
+
+       
+
+       
+
+  

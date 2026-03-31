@@ -63,3 +63,5 @@ scenarios/none.sh
 **/*.egg-info
 config_explorer/build/
 .pytest
+
+tektoncsample/blis/pipeline.yaml

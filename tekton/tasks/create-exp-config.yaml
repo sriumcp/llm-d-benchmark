@@ -1,0 +1,76 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: create-exp-config
+spec:
+  params:
+    - name: model
+      type: string
+    - name: tp
+      type: string
+    - name: max_model_len
+      type: string
+    - name: max_num_batched_tokens
+      type: string
+    - name: max_num_seqs
+      type: string
+    - name: app
+      type: string
+    - name: results_dir
+      type: string
+      description: Directory inside the data workspace where output will be written
+
+  workspaces:
+    - name: data
+      description: Workspace where config file will be written
+
+  steps:
+    - name: write-config
+      image: alpine:3.20
+      script: |
+        mkdir -p "$(workspaces.data.path)/$(params.results_dir)"
+        chmod -R 777 "$(workspaces.data.path)/$(params.results_dir)"
+
+        cat <<EOF > "$(workspaces.data.path)/$(params.results_dir)/exp-config.yaml"
+        model: $(params.model)
+        tensor_parallelism: $(params.tp)
+        max_model_len: $(params.max_model_len)
+        max_num_batched_tokens: $(params.max_num_batched_tokens)
+        max_num_seqs: $(params.max_num_seqs)
+        app: $(params.app)
+        EOF
+
+        # NEW: Write vllm_logging.json
+        LOGFILE_PATH="/mnt/exp/$(params.results_dir)/vllm.log"
+
+        cat <<EOF > "$(workspaces.data.path)/$(params.results_dir)/vllm_logging.json"
+        {
+          "version": 1,
+          "disable_existing_loggers": false,
+          "handlers": {
+            "file": {
+              "class": "logging.FileHandler",
+              "filename": "${LOGFILE_PATH}",
+              "level": "INFO",
+              "formatter": "simple"
+            }
+          },
+          "formatters": {
+            "simple": {
+              "format": "%(asctime)s %(levelname)s %(name)s: %(message)s"
+            }
+          },
+          "loggers": {
+            "vllm": {
+              "handlers": ["file"],
+              "level": "INFO",
+              "propagate": false
+            }
+          }
+        }
+        EOF
+
+
+        echo "Generated exp-config.yaml and vllm_logging.json in $(workspaces.data.path)/$(params.results_dir)"
+
+

@@ -1,0 +1,86 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: analyze-inference-perf
+spec:
+  description: |
+    Analyze and summarize results from a workload run.
+
+  workspaces:
+    - name: source
+    - name: data
+    - name: hf-credentials
+
+  params:
+    - { name: results_dir, type: string }
+
+  steps:
+    - name: convert-results
+      env: 
+        - { name: HARNESS, value: inference-perf }
+        - { name: RESULTS_DIR, value: "$(workspaces.data.path)/$(params.results_dir)" }
+      image: python:3.12.9-slim-bookworm
+      script: |
+        #!/usr/bin/env bash
+        set -eu
+
+        # Activate virtual environment
+        HARNESS_DIR=$(workspaces.source.path)/harnesses
+        source ${HARNESS_DIR}/${HARNESS}.venv/bin/activate
+
+        # https://github.com/llm-d/llm-d-benchmark/blob/main/workload/harnesses/inference-perf-llm-d-benchmark.sh#L17C1-L26C5
+        echo "🔄 Convert results into universal format"
+        for result in $(find $RESULTS_DIR -name 'stage_*.json'); do
+          result_fname=$(echo $result | rev | cut -d '/' -f 1 | rev)
+          result_dir=$(echo "$result" | rev | cut -d '/' -f 2- | rev)
+          $(workspaces.source.path)/convert/convert.py $result -w inference-perf $result_dir/benchmark_report,_$result_fname.yaml 2> >(tee -a $result_dir/stderr.log >&2)
+          # Report errors but don't quit
+          export CONVERT_RC=$?
+          if [[ $CONVERT_RC -ne 0 ]]; then
+            echo "./convert.py returned with error $CONVERT_RC converting: $result"
+          fi
+        done
+
+    - name: analyze
+      env:
+        - { name: HARNESS, value: inference-perf }
+        - { name: RESULTS_DIR, value: "$(workspaces.data.path)/$(params.results_dir)" }
+      image: python:3.12.9-slim-bookworm
+      script: |
+        #!/usr/bin/env bash
+
+        # Activate virtual environment
+        HARNESS_DIR=$(workspaces.source.path)/harnesses
+        source ${HARNESS_DIR}/${HARNESS}.venv/bin/activate
+
+        # Define function to call analysis so can call multiple times
+        # https://github.com/llm-d/llm-d-benchmark/blob/main/analysis/inference-perf-analyze_results.sh
+        analyze_results () {
+          local result_dir="${1}"
+          mkdir -p $result_dir/analysis
+          sleep 60
+          tm=$(date)
+          inference-perf --analyze "$result_dir/results"
+          ec=$?
+          find $result_dir -type f -newermt "${tm}" -exec mv -t "$result_dir"/analysis {} +
+          return $ec
+        }
+
+        # https://github.com/llm-d/llm-d-benchmark/blob/main/build/llm-d-benchmark.sh#L63-L74
+        echo "🔄 Running analysis"
+        # Try to run analysis twice then give up
+
+        for d in $(ls -d $RESULTS_DIR/*/*/); do
+          analyze_results $d 
+          ec=$?
+          if [[ $ec -ne 0 ]]; then
+            echo "execution of analyzer failed, wating 120 seconds and trying again"
+            sleep 120
+            set -x
+            analyze_results $d
+          fi
+        done
+        # Return with error code of first iteration of experiment analyzer
+        # TBD modify this message depending on success
+        echo "✅ Results analyzed and reports generated"
+        exit $ec

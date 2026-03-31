@@ -1,0 +1,455 @@
+experiment:
+  name: inference-scheduling
+  description: Sample Inference Scheduling Experiment
+
+modelId: "Qwen/Qwen3-0.6B"
+modelLabelPrefix: "qwen-qwen3-0-6b"
+
+stack:
+  treatments:
+    pluginConfigFile:
+      - "inf-sche-none.yaml"
+      - "inf-sche-prefix.yaml"
+      - "inf-sche-kv.yaml"
+      - "inf-sche-queue.yaml"
+
+  gateway:
+    chart: llm-d-infra/llm-d-infra
+    # version: use latest
+    repo: llm-d-infra
+    repoUrl: https://llm-d-incubation.github.io/llm-d-infra/
+    values:
+      gateway:
+        gatewayClassName: kgateway
+        service:
+          type: NodePort
+        gatewayParameters:
+          enabled: true
+  gaie:
+    chart: oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool
+    version: v1.0.1
+    # repo: not relevant for chart with oci:// prefix
+    values:
+      inferenceExtension:
+        replicas: 1
+        image:
+          # Either image will work, you just need to bring the correct plugins per image. In this example we will bring the upstream default plugin
+          ###################
+          name: llm-d-inference-scheduler
+          hub: ghcr.io/llm-d
+          tag: v0.2.1
+          pullPolicy: Always
+        extProcPort: 9002
+        extraContainerPorts:
+          - name: zmq
+            containerPort: 5557
+            protocol: TCP
+        extraServicePorts:
+          - name: zmq
+            port: 5557
+            targetPort: 5557
+            protocol: TCP
+        env:
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-secret
+                key: HF_TOKEN
+        pluginsConfigFile: "inf-sche-none.yaml"
+        pluginsCustomConfig:
+          inf-sche-none.yaml: |
+            # Sample EPP configuration for running without P/D with no scorers
+            # https://raw.githubusercontent.com/llm-d/llm-d-benchmark/refs/heads/main/setup/presets/gaie/inf-sche-none.yaml
+            apiVersion: inference.networking.x-k8s.io/v1alpha1
+            kind: EndpointPickerConfig
+            plugins:
+            - type: prefix-cache-scorer
+            - type: decode-filter
+            - type: max-score-picker
+            - type: single-profile-handler
+            schedulingProfiles:
+            - name: default
+              plugins:
+              - pluginRef: decode-filter
+              - pluginRef: max-score-picker
+              - pluginRef: prefix-cache-scorer
+                weight: 0
+          inf-sche-prefix-kv-queue.yaml: |
+            # Sample EPP configuration for running without P/D with prefix, kv, and queue scorers
+            # https://raw.githubusercontent.com/llm-d/llm-d-benchmark/refs/heads/main/setup/presets/gaie/inf-sche-prefix-kv-queue.yaml
+            apiVersion: inference.networking.x-k8s.io/v1alpha1
+            kind: EndpointPickerConfig
+            plugins:
+            - type: prefix-cache-scorer
+            - type: decode-filter
+            - type: max-score-picker
+            - type: single-profile-handler
+            - type: kv-cache-scorer
+            - type: queue-cache-scorer
+            schedulingProfiles:
+            - name: default
+              plugins:
+              - pluginRef: decode-filter
+              - pluginRef: max-score-picker
+              - pluginRef: prefix-cache-scorer
+                weight: 1
+              - pluginRef: kv-cache-scorer
+                weight: 1
+              - pluginRef: queue-scorer
+                weight: 1
+          inf-sche-prefix-kv.yaml: |
+            # Sample EPP configuration for running without P/D with prefix and kv scorers
+            # https://raw.githubusercontent.com/llm-d/llm-d-benchmark/refs/heads/main/setup/presets/gaie/inf-sche-prefix-kv.yaml
+            apiVersion: inference.networking.x-k8s.io/v1alpha1
+            kind: EndpointPickerConfig
+            plugins:
+            - type: prefix-cache-scorer
+            - type: decode-filter
+            - type: max-score-picker
+            - type: single-profile-handler
+            - type: kv-cache-scorer
+            schedulingProfiles:
+            - name: default
+              plugins:
+              - pluginRef: decode-filter
+              - pluginRef: max-score-picker
+              - pluginRef: prefix-cache-scorer
+                weight: 1
+              - pluginRef: kv-cache-scorer
+                weight: 1
+              - pluginRef: queue-scorer
+                weight: 1
+          inf-sche-prefix.yaml: |
+            # Sample EPP configuration for running without P/D with prefix scorer with weight of 1
+            # https://raw.githubusercontent.com/llm-d/llm-d-benchmark/refs/heads/main/setup/presets/gaie/inf-sche-prefix.yaml
+            apiVersion: inference.networking.x-k8s.io/v1alpha1
+            kind: EndpointPickerConfig
+            plugins:
+            - type: prefix-cache-scorer
+            - type: decode-filter
+            - type: max-score-picker
+            - type: single-profile-handler
+            schedulingProfiles:
+            - name: default
+              plugins:
+              - pluginRef: decode-filter
+              - pluginRef: max-score-picker
+              - pluginRef: prefix-cache-scorer
+                weight: 1
+          inf-sche-queue.yaml: |
+            # Sample EPP configuration for running without P/D with no scorers
+            # https://raw.githubusercontent.com/llm-d/llm-d-benchmark/refs/heads/main/setup/presets/gaie/inf-sche-queue.yaml
+            apiVersion: inference.networking.x-k8s.io/v1alpha1
+            kind: EndpointPickerConfig
+            plugins:
+            - type: queue-scorer
+            - type: decode-filter
+            - type: max-score-picker
+            - type: single-profile-handler
+            schedulingProfiles:
+            - name: default
+              plugins:
+              - pluginRef: decode-filter
+              - pluginRef: max-score-picker
+              - pluginRef: queue-scorer
+                weight: 1
+          inf-sche-kv.yaml: |
+            # Sample EPP configuration for running without P/D with no scorers
+            # https://raw.githubusercontent.com/llm-d/llm-d-benchmark/refs/heads/main/setup/presets/gaie/inf-sche-kv.yaml
+            apiVersion: inference.networking.x-k8s.io/v1alpha1
+            kind: EndpointPickerConfig
+            plugins:
+            - type: kv-cache-scorer
+            - type: decode-filter
+            - type: max-score-picker
+            - type: single-profile-handler
+            schedulingProfiles:
+            - name: default
+              plugins:
+              - pluginRef: decode-filter
+              - pluginRef: max-score-picker
+              - pluginRef: kv-cache-scorer
+                weight: 1
+      inferencePool:
+        targetPortNumber: 8000
+        modelServerType: vllm
+        apiVersion: "inference.networking.x-k8s.io/v1alpha2"
+        modelServers:
+          matchLabels:
+            llm-d.ai/inferenceServing: "true"
+            llm-d.ai/model: qwen-qwen3-0-6b
+      provider:
+        name: none
+  model:
+    chart: llm-d-modelservice/llm-d-modelservice
+    version: modelchartversion
+    repo: llm-d-modelservice
+    repoUrl: https://llm-d-incubation.github.io/llm-d-modelservice/
+    values:
+      fullnameOverride: qwen-qwen3-0-6b
+      multinode: false
+
+      modelArtifacts:
+        uri: pvc://model-pvc/models/Qwen/Qwen3-0.6B
+        size: 300Gi
+        authSecretName: "hf-secret"
+        name: Qwen/Qwen3-0.6B
+
+      routing:
+        servicePort: 8000
+        parentRefs:
+          - group: gateway.networking.k8s.io
+            kind: Gateway
+            name: experiment-gateway-inference-gateway
+        proxy:
+          image: "ghcr.io/llm-d/llm-d-routing-sidecar:v0.3.0"
+          secure: false
+          connector: nixlv2
+          debugLevel: 3
+        inferenceModel:
+          create: true
+        inferencePool:
+          create: false
+          name: experiment-gaie
+        httpRoute:
+          create: true
+          rules:
+          - backendRefs:
+            - group: inference.networking.x-k8s.io
+              kind: InferencePool
+              name: experiment-gaie
+              port: 8000
+              weight: 1
+            timeouts:
+              backendRequest: 0s
+              request: 0s
+            matches:
+            - path:
+                type: PathPrefix
+                value: /qwen-qwen3-0-6b/
+            filters:
+            - type: URLRewrite
+              urlRewrite:
+                path:
+                  type: ReplacePrefixMatch
+                  replacePrefixMatch: /
+          - backendRefs:
+            - group: inference.networking.x-k8s.io
+              kind: InferencePool
+              name: experiment-gaie
+              port: 8000
+              weight: 1
+            timeouts:
+              backendRequest: 0s
+              request: 0s
+
+        epp:
+          create: false
+
+      decode:
+        create: true
+        replicas: 2
+        acceleratorTypes:
+            labelKey: nvidia.com/gpu.product
+            labelValues:
+              - NVIDIA-H100-80GB-HBM3
+        parallelism:
+          data: 1
+          tensor: 1
+        annotations:
+            deployed-by: jchen
+            modelservice: llm-d-benchmark
+        podAnnotations:
+            deployed-by: jchen
+            modelservice: llm-d-benchmark
+        #no____config
+        containers:
+        - name: "vllm"
+          mountModelVolume: true
+          image: "ghcr.io/llm-d/llm-d:v0.2.0"
+          modelCommand: vllmServe
+          
+          args:
+            - "--enforce-eager"
+            - "--block-size"
+            - "64"
+            - "--kv-transfer-config"
+            - '{"kv_connector":"NixlConnector","kv_role":"kv_both"}'
+            - "--tensor-parallel-size"
+            - "1"
+            - "--disable-log-requests"
+            - "--disable-uvicorn-access-log"
+            - "--max-model-len"
+            - "16000" 
+          env:
+            - name: UCX_TLS
+              value: "cuda_ipc,cuda_copy,tcp"
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: "5557"
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: VLLM_LOGGING_LEVEL
+              value: DEBUG
+            - name: VLLM_ALLOW_LONG_MAX_MODEL_LEN
+              value: "1"
+          resources:
+            limits:
+              memory: 64Gi
+              cpu: "16"
+              
+              nvidia.com/gpu: "1"
+              
+            requests:
+              memory: 64Gi
+              cpu: "16"
+              
+              nvidia.com/gpu: "1"
+              
+          extraConfig:
+            startupProbe:
+              httpGet:
+                path: /health
+                port: 8200
+              failureThreshold: 60
+              initialDelaySeconds: 30
+              periodSeconds: 30
+              timeoutSeconds: 5
+            livenessProbe:
+              tcpSocket:
+                port: 8200
+              failureThreshold: 3
+              periodSeconds: 5
+            readinessProbe:
+              httpGet:
+                path: /health
+                port: 8200
+              failureThreshold: 3
+              periodSeconds: 5
+          
+            ports:
+              - containerPort: 5557
+                protocol: TCP
+              - containerPort: 8200
+                name: metrics
+                protocol: TCP
+          volumeMounts: []
+        volumes: []
+
+    prefill:
+      create: false
+      replicas: 0
+      acceleratorTypes:
+          labelKey: nvidia.com/gpu.product
+          labelValues:
+            - NVIDIA-H100-80GB-HBM3
+      parallelism:
+        data: 1
+        tensor: 1
+      annotations:
+          deployed-by: jchen
+          modelservice: llm-d-benchmark
+      podAnnotations:
+          deployed-by: jchen
+          modelservice: llm-d-benchmark
+      #no____config
+      containers:
+      - name: "vllm"
+        mountModelVolume: true
+        image: "ghcr.io/llm-d/llm-d:v0.2.0"
+        modelCommand: vllmServe
+        
+        args:
+          - "--disable-log-requests"
+          - "--max-model-len"
+          - "16000"
+          - "--tensor-parallel-size"
+          - "1" 
+        env:
+          - name: VLLM_IS_PREFILL
+            value: "1"
+          - name: UCX_TLS
+            value: "cuda_ipc,cuda_copy,tcp"
+          - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+            value: "5557"
+          - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: VLLM_LOGGING_LEVEL
+            value: DEBUG
+          - name: VLLM_ALLOW_LONG_MAX_MODEL_LEN
+            value: "1"
+        resources:
+          limits:
+            memory: 40Gi
+            cpu: "4"
+            
+            nvidia.com/gpu: "0"
+            
+          requests:
+            memory: 40Gi
+            cpu: "4"
+            
+            nvidia.com/gpu: "0"
+            
+        extraConfig:
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 60
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            failureThreshold: 3
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 3
+            periodSeconds: 5
+        
+          ports:
+            - containerPort: 5557
+              protocol: TCP
+            - containerPort: 8200
+              name: metrics
+              protocol: TCP
+        volumeMounts: []
+      volumes: []
+
+workload:
+  harness: inference-perf
+  profile: shared_prefix_synthetic.yaml
+  # do we want the user to embed the profile?
+  treatments:
+    - question_len: 100
+      output_len: 100
+    - question_len: 100
+      output_len: 200
+    - question_len: 100
+      output_len: 1000
+    - question_len: 300
+      output_len: 100
+    - question_len: 300
+      output_len: 300
+    - question_len: 300
+      output_len: 1000
+    - question_len: 1000
+      output_len: 100
+    - question_len: 1000
+      output_len: 300
+    - question_len: 1000
+      output_len: 1000
+upload_target:
+  type: s3
+  configuration:
+    bucket: cloud-object-storage-cos-standard-ere
+    endpoint: https://s3.us-east.cloud-object-storage.appdomain.cloud
+

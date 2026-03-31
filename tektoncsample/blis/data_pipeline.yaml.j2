@@ -1,0 +1,204 @@
+# BLIS training pipeline
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: {{ experiment.name | dns }}
+spec:
+  {% if experiment.description is defined and experiment.description %}
+  description: {{ experiment.description }}
+  {% endif %}
+
+  workspaces:
+    - name: model-cache
+      description: Location where models are stored; shared by multiple model servers
+    - name: hf-credentials
+      description: Secret workspace containing a HuggingFace token
+    - name: data
+      description: Cache of training results
+    - name: target-credentials
+      description: >-
+        Secret workspace containing upload target credentials. 
+        For example, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for s3.
+
+
+  params:
+    - name: experimentId
+      type: string
+      description: Identifier for experiment execution
+    - name: model
+      type: string
+      description: the model to be deployed for training
+    - name: namespace
+      type: string
+      description: Kubernetes namespace where training will execute
+
+  tasks:
+    - name: download-model
+      taskRef: { name: download-model }
+      workspaces:
+        - name: model-cache
+        - name: hf-credentials
+      params:
+        - name: model
+          value: "$(params.model)"
+
+    # - name: install-guidellm
+    #   taskRef: { name: install-guidellm }
+    #   runAfter: [ "download-model" ]
+    #   workspaces:
+    #     - name: data
+
+    # Loop: Run stacks (different model engine configurations) in parallel
+    - loopName: per-stack
+      foreach:
+        domain:
+          tp: {{ stack.treatments.tensorParallelism }}
+
+      vars:
+        stackId: "{{ tp }}"
+        stackModelLabel:  "$(params.experimentId)-{{ tp }}"
+
+      tasks:
+        - name: create-exp-config-{{ stackId }}
+          taskRef: { name: create-exp-config }
+          # runAfter: [ "install-guidellm" ]
+          runAfter: [ "download-model" ]
+          workspaces:
+            - name: data
+          params:
+            - { name: model, value: "$(params.model)" }
+            - { name: tp, value: "{{ tp }}" }
+            - { name: max_model_len, value: "{{ stack.MAX_MODEL_LEN }}" }
+            - { name: max_num_batched_tokens, value: "{{ stack.MAX_NUM_BATCHED_TOKENS }}" }
+            - { name: max_num_seqs, value: "{{ stack.MAX_NUM_SEQS }}" }
+            - { name: app, value: "{{ stack.workload.app }}" }
+            - { name: results_dir, value: "{{ stackModelLabel }}" }
+
+        - name: deploy-otel-collector-{{ stackId }}
+          description: >-
+            Deploy a per-experiment OpenTelemetry collector
+          taskRef: { name: create-otel-collector }
+          # runAfter: [ "install-guidellm" ]
+          runAfter: [ "download-model" ]
+          workspaces:
+            - name: data
+          params:
+            - { name: modelLabel, value: "{{ stackModelLabel }}"}
+            - { name: results_dir ,value: "{{ stackModelLabel }}" }
+            
+
+        - name: deploy-model-{{ stackId }}
+          description: >-
+            Deploy model engines.
+            Uses the modelservice helm chart.
+            The task implementation automatically overrides "modelArtifacts.name", 
+            "modelArtifacts.uri" "modelArtifacts.labels."llm-d.ai/model", 
+            and "fullnameOverride" to avoid conflicts and ensure consistency.
+          taskRef: { name: deploy-model }
+          runAfter: [ "deploy-otel-collector-{{ stackId }}" ]
+          workspaces:
+            - name: model-cache
+          params:
+            - { name: model, value: $(params.model) }
+            - { name: modelLabel, value: "{{ stackModelLabel }}"}
+            - { name: namespace , value: $(params.namespace) }
+            - { name: config, value: {{ stack.model.helmValues }} }
+            - name: overrides
+              value:
+                - decode.parallelism.tensor={{ tp }}
+                - decode.containers[name="vllm"].args=--max-model-len={{ stack.MAX_MODEL_LEN }}
+                - decode.containers[name="vllm"].args=--max-num-batched-tokens={{ stack.MAX_NUM_BATCHED_TOKENS }}
+                - decode.containers[name="vllm"].args=--max-num-seqs={{ stack.MAX_NUM_SEQS }}
+                - decode.containers[name="vllm"].args=--otlp-traces-endpoint=http://otel-{{stackModelLabel}}:4318/v1/traces
+                - decode.containers[name="vllm"].env[name="OTEL_EXPORTER_OTLP_ENDPOINT"].value=http://otel-{{stackModelLabel}}:4318
+                - decode.containers[name="vllm"].env[name="OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"].value=http://otel-{{stackModelLabel}}:4318
+                - decode.containers[name="vllm"].env[name="VLLM_LOGGING_CONFIG_PATH"].value="/mnt/exp/{{ stackModelLabel }}/vllm_logging.json"
+
+        - name: run-workload-{{ stackId }}
+          description: Run workload against model server.
+          taskRef: { name: run-workload-{{ workload.harness }} }
+          runAfter: [ "deploy-model-{{ stackId }}" ]
+          timeout: "350m" 
+          retries: 3
+          workspaces:
+            - name: data
+            - name: hf-credentials
+          params:
+            - { name: modelLabel, value: "{{ stackModelLabel }}"}
+            - { name: results_dir, value: "{{ stackModelLabel }}" }
+
+            - { name: max_requests, value: "{{ stack.workload.profile.max_requests }}" }
+            - { name: rate, value: "{{ stack.workload.profile.rate }}" }
+            - { name: rate_type, value: "{{ stack.workload.profile.rate_type }}" }
+            - { name: random_seed, value: "{{ stack.workload.profile.random_seed }}" }
+
+            - { name: prefix_tokens, value: "{{ stack.workload.profile.data.prefix_tokens }}" }
+            - { name: prompt_tokens, value: "{{ stack.workload.profile.data.prompt_tokens }}" }
+            - { name: prompt_tokens_stdev, value: "{{ stack.workload.profile.data.prompt_tokens_stdev }}" }
+            - { name: prompt_tokens_min, value: "{{ stack.workload.profile.data.prompt_tokens_min }}" }
+            - { name: prompt_tokens_max, value: "{{ stack.workload.profile.data.prompt_tokens_max }}" }
+            - { name: output_tokens, value: "{{ stack.workload.profile.data.output_tokens }}" }
+            - { name: output_tokens_stdev, value: "{{ stack.workload.profile.data.output_tokens_stdev }}" }
+            - { name: output_tokens_min, value: "{{ stack.workload.profile.data.output_tokens_min }}" }
+            - { name: output_tokens_max, value: "{{ stack.workload.profile.data.output_tokens_max }}" }
+
+
+        - name: delete-model-{{ stackId }}
+          description: Delete the model engine and workload generator.
+          runAfter: [ "run-workload-{{ stackId }}" ]
+          taskRef: { name: delete-model }
+          params:
+            - { name: namespace, value: "$(params.namespace)" }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+
+        - name: delete-otel-collector-{{ stackId }}
+          description: Delete the OTEL objects.
+          runAfter: [ "run-workload-{{ stackId }}" ]
+          taskRef: { name: delete-otel-collector }
+          params:
+            - { name: namespace, value: "$(params.namespace)" }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+
+        {% if upload_target is defined and upload_target %}
+        - name: raw-upload-{{ stackId }}
+          description: Upload raw data to target data repository 
+          taskRef: { name: upload-{{ upload_target.type }} }
+          runAfter: [ "run-workload-{{ stackId }}" ]
+          workspaces:
+            - name: data
+            - name: target-credentials
+          params:
+            - name: archive
+              value: "{{ stackModelLabel }}-raw.tar.gz"
+            - name: paths
+              value: |
+                {{ stackModelLabel }}
+            - { name: target, value: {{ upload_target.configuration }} }
+        {% endif %}
+
+       
+
+  finally:
+    # Loop in 'finally': make all stacks are deleted when done
+    # Should we also delete results?
+    - loopName: cleanup
+      foreach:
+        domain:
+          tp: {{ stack.treatments.tensorParallelism }}
+
+      vars:
+        stackId: "{{ tp }}"
+        stackModelLabel:  "$(params.experimentId)-{{ tp }}"
+
+      tasks:
+        - name: finally-delete-model-{{ stackId }}
+          taskRef: { name: delete-model }
+          params:
+            - { name: namespace, value: "$(params.namespace)" }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+
+        - name: finally-delete-otel-collector-{{ stackId }}
+          taskRef: { name: delete-otel-collector }
+          params:
+            - { name: namespace, value: "$(params.namespace)" }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }

@@ -1,0 +1,94 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-httproute
+spec:
+  description: |
+    Deploy Kubernetes HTTPRoute
+      
+  params:
+    - name: namespace
+      type: string
+      description: Namespace in which to create the HTTPRoute
+    - name: gateway
+      type: string
+      description: Name of the Gateway through which requests are sent
+    - name: inferencepool
+      type: string
+      description: Name of the InferencePool supporting the model
+    - name: modelLabel
+      type: string
+      description: unique identifier for model in DNS compatible form
+    - name: vllm_port
+      description: port on the VLLM engine to which requests should be sent
+      type: string
+      default: "8000"
+    - name: gaie_api_version
+      type: string
+      description: API version for GAIE resources
+      default: "inference.networking.x-k8s.io"
+
+  steps:
+    - name: create-httproute
+      env:
+        - name: NAMESPACE
+          value: $(params.namespace)
+        - name: GATEWAY
+          value: $(params.gateway)
+        - name: INFERENCEPOOL
+          value: $(params.inferencepool)
+        - name: MODEL_LABEL
+          value: $(params.modelLabel)
+        - name: VLLM_PORT
+          value: $(params.vllm_port)
+        - name: GAIE_API_VERSION
+          value: $(params.gaie_api_version)
+      image: alpine/kubectl:1.34.1
+      script: |
+        #!/bin/sh
+        set -eu
+        
+        cat <<EOF > /workspace/manifest.yaml
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: ${MODEL_LABEL}
+            namespace: ${NAMESPACE}
+          spec:
+            parentRefs:
+              - group: gateway.networking.k8s.io
+                kind: Gateway
+                name: ${GATEWAY}
+            rules:
+            - backendRefs:
+              - group: ${GAIE_API_VERSION}
+                kind: InferencePool
+                name: ${INFERENCEPOOL}
+                port: ${VLLM_PORT}
+                weight: 1
+              timeouts:
+                backendRequest: 0s
+                request: 0s
+              matches:
+              - path:
+                  type: PathPrefix
+                  value: /${MODEL_LABEL}/
+              filters:
+              - type: URLRewrite
+                urlRewrite:
+                  path:
+                    type: ReplacePrefixMatch
+                    replacePrefixMatch: /
+            # - backendRefs:
+            #   - group: ${GAIE_API_VERSION}
+            #     kind: InferencePool
+            #     name: ${INFERENCEPOOL}
+            #     port: ${VLLM_PORT}
+            #     weight: 1
+            #   timeouts:
+            #     backendRequest: 0s
+            #     request: 0s
+        EOF
+
+        cat /workspace/manifest.yaml
+        kubectl apply -f /workspace/manifest.yaml

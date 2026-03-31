@@ -1,0 +1,43 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: delete-httproute
+spec:
+  description: |
+    Delete HTTPRoute
+  params:
+    - { name: namespace, type: string }
+    - { name: modelLabel, type: string }
+    - { name: debug, type: string, default: "false" }
+
+  steps:
+    - name: dry-run
+      when:
+        - input: $(params.debug)
+          operator: in
+          values: ["true", "True"]
+      image: alpine:3.20
+      script: |
+        #!/bin/sh
+        set -eu
+        echo "delete-httproute called"
+
+    - name: delete
+      when:
+        - input: $(params.debug)
+          operator: in
+          values: ["false", "False",]
+      image: alpine/kubectl:1.34.1
+      env:
+        - name: NAMESPACE
+          value: $(params.namespace)
+        - name: MODEL_LABEL
+          value: $(params.modelLabel)
+
+      script: |
+        #!/bin/sh
+        set -eu
+
+        kubectl --namespace ${NAMESPACE} \
+          delete httproute ${MODEL_LABEL} \
+          --ignore-not-found

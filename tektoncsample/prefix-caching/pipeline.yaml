@@ -1,0 +1,488 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: prefix-caching
+spec:
+  description: Prefix Caching
+  workspaces:
+  - name: model-cache
+    description: Location where models are stored; shared by multiple model servers
+  - name: hf-credentials
+    description: Secret workspace containing a HuggingFace token
+  - name: data
+    description: Workspace of results
+  - name: source
+    description: Location where source is cached
+  - name: target-credentials
+    description: Secret workspace containing upload target credentials.  For example, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for s3.
+  params:
+  - name: experimentId
+    type: string
+    description: Identifier for experiment execution
+  - name: model
+    type: string
+    description: the model to be deployed for training
+  - name: namespace
+    type: string
+    description: Kubernetes namespace where training will execute
+  - name: debug
+    type: string
+    default: 'false'
+    description: Flag indicating whether or not to delete deployed objects (no when debug true)
+  tasks:
+  - name: deploy-gateway
+    description: 'Deploy one gateway for experiment.
+
+      Used by all concurrent model deployments.
+
+      '
+    taskRef:
+      name: deploy-gateway
+    params:
+    - name: experimentId
+      value: $(params.experimentId)
+    - name: namespace
+      value: $(params.namespace)
+    - name: config
+      value:
+        gateway:
+          gatewayClassName: kgateway
+          service:
+            type: NodePort
+          gatewayParameters:
+            enabled: true
+  - name: download-model
+    description: Download model from HuggingFace.
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    - name: hf-credentials
+    params:
+    - name: model
+      value: $(params.model)
+  - name: install-workload-harness
+    description: 'Install workload harness
+
+      '
+    taskRef:
+      name: install-inference-perf
+    workspaces:
+    - name: source
+  - name: install-data-convertion-tools
+    description: 'Install tools to convert harness output to universal format.
+
+      '
+    taskRef:
+      name: install-convert
+    workspaces:
+    - name: source
+  - name: deploy-gaie-64-1000
+    description: Configure GAIE for each stack.
+    taskRef:
+      name: deploy-gaie
+    runAfter:
+    - deploy-gateway
+    params:
+    - name: namespace
+      value: $(params.namespace)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: config
+      value:
+        inferenceExtension:
+          replicas: 1
+          image:
+            name: llm-d-inference-scheduler
+            hub: ghcr.io/llm-d
+            tag: v0.3.2-with-sidecar-fix
+            pullPolicy: Always
+          extProcPort: 9002
+          extraContainerPorts:
+          - name: zmq
+            containerPort: 5557
+            protocol: TCP
+          extraServicePorts:
+          - name: zmq
+            port: 5557
+            targetPort: 5557
+            protocol: TCP
+          env:
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-secret
+                key: HF_TOKEN
+        inferencePool:
+          targetPortNumber: 8000
+          modelServerType: vllm
+          apiVersion: inference.networking.x-k8s.io/v1alpha2
+          modelServers:
+            matchLabels:
+              llm-d.ai/inferenceServing: 'true'
+              llm-d.ai/model: qwen-qwen3-0-6b
+        provider:
+          name: none
+  - name: deploy-model-64-1000
+    taskRef:
+      name: deploy-model
+    runAfter:
+    - download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: $(params.model)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: namespace
+      value: $(params.namespace)
+    - name: config
+      value:
+        fullnameOverride: MODEL_LABEL
+        serviceAccountOverride: default
+        multinode: false
+        modelArtifacts:
+          uri: pvc://model-pvc/models/MODEL
+          size: 300Gi
+          authSecretName: hf-secret
+          name: MODEL
+        routing:
+          servicePort: 8000
+          proxy:
+            enable: true
+            image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.3.0
+            secure: false
+            connector: nixl
+            debugLevel: 1
+        decode:
+          create: true
+          replicas: 1
+          acceleratorTypes:
+            labelKey: nvidia.com/gpu.product
+            labelValues:
+            - NVIDIA-H100-80GB-HBM3
+          parallelism:
+            data: 1
+            tensor: 1
+          annotations:
+            deployed-by: tekton
+            modelservice: llm-d-benchmark
+          podAnnotations:
+            deployed-by: tekton
+            modelservice: llm-d-benchmark
+          containers:
+          - name: vllm
+            mountModelVolume: true
+            image: vllm/vllm-openai:v0.11.2
+            modelCommand: vllmServe
+            args:
+            - --enforce-eager
+            - --disable-log-requests
+            - --disable-uvicorn-access-log
+            env:
+            - name: UCX_TLS
+              value: cuda_ipc,cuda_copy,tcp
+            - name: UCX_SOCKADDR_TLS_PRIORITY
+              value: tcp
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: '5557'
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: VLLM_LOGGING_LEVEL
+              value: DEBUG
+            - name: VLLM_ALLOW_LONG_MAX_MODEL_LEN
+              value: '1'
+            resources:
+              limits:
+                memory: 64Gi
+                cpu: '16'
+              requests:
+                memory: 64Gi
+                cpu: '16'
+            extraConfig:
+              startupProbe:
+                httpGet:
+                  path: /health
+                  port: 8200
+                failureThreshold: 60
+                initialDelaySeconds: 30
+                periodSeconds: 30
+                timeoutSeconds: 5
+              livenessProbe:
+                tcpSocket:
+                  port: 8200
+                failureThreshold: 3
+                periodSeconds: 5
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: 8200
+                failureThreshold: 3
+                periodSeconds: 5
+              ports:
+              - containerPort: 5557
+                protocol: TCP
+              - containerPort: 8200
+                name: metrics
+                protocol: TCP
+            volumeMounts: []
+          volumes: []
+        prefill:
+          create: true
+          replicas: 0
+          acceleratorTypes:
+            labelKey: nvidia.com/gpu.product
+            labelValues:
+            - NVIDIA-H100-80GB-HBM3
+          parallelism:
+            data: 1
+            tensor: 1
+          annotations:
+            deployed-by: tekton
+            modelservice: llm-d-benchmark
+          podAnnotations:
+            deployed-by: tekton
+            modelservice: llm-d-benchmark
+          containers:
+          - name: vllm
+            mountModelVolume: true
+            image: ghcr.io/llm-d/llm-d:v0.2.0
+            modelCommand: vllmServe
+            args: []
+            env:
+            - name: VLLM_IS_PREFILL
+              value: '1'
+            - name: UCX_TLS
+              value: cuda_ipc,cuda_copy,tcp
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: '5557'
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: VLLM_LOGGING_LEVEL
+              value: DEBUG
+            - name: VLLM_ALLOW_LONG_MAX_MODEL_LEN
+              value: '1'
+            resources:
+              limits:
+                memory: 40Gi
+                cpu: '4'
+              requests:
+                memory: 40Gi
+                cpu: '4'
+            extraConfig:
+              startupProbe:
+                httpGet:
+                  path: /health
+                  port: 8000
+                failureThreshold: 60
+                initialDelaySeconds: 30
+                periodSeconds: 30
+                timeoutSeconds: 5
+              livenessProbe:
+                tcpSocket:
+                  port: 8000
+                failureThreshold: 3
+                periodSeconds: 5
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: 8000
+                failureThreshold: 3
+                periodSeconds: 5
+              ports:
+              - containerPort: 5557
+                protocol: TCP
+              - containerPort: 8200
+                name: metrics
+                protocol: TCP
+            volumeMounts: []
+          volumes: []
+    - name: overrides
+      value:
+      - decode.replicas=1
+      - decode.resources.limits.cpu=16
+      - decode.resources.limits.memory=64Gi
+      - decode.resources.requests.cpu=16
+      - decode.resources.requests.memory=64Gi
+      - decode.containers[name="vllm"].args=--kv-transfer-config={"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"block_size":64,"num_cpu_blocks":1000 }}
+      - decode.containers[name="vllm"].args=--max-model-len=16000
+      - decode.acceleratorTypes.labelKey="nvidia.com/gpu.product"
+      - decode.acceleratorTypes.labelValues=NVIDIA-H100-80GB-HBM3
+      - prefill.create=false
+  - name: deploy-httproute-64-1000
+    description: Create HttpRoute to route traffic with modelLabel in path to the deployed model engines.
+    taskRef:
+      name: deploy-httproute
+    runAfter:
+    - deploy-gaie-64-1000
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-64-1000.results.inferencepool)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: namespace
+      value: $(params.namespace)
+  - name: run-workload-64-1000-0
+    taskRef:
+      name: run-workload-inference-perf
+    runAfter:
+    - deploy-model-64-1000
+    - deploy-httproute-64-1000
+    - install-workload-harness
+    workspaces:
+    - name: source
+    - name: data
+    - name: hf-credentials
+    params:
+    - name: model
+      value: $(params.model)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: url
+      value: http://$(tasks.deploy-gateway.results.endpoint)/stack-64-1000
+    - name: profileTemplate
+      value:
+        load:
+          type: constant
+          stages:
+          - rate: 2
+            duration: 50
+          - rate: 5
+            duration: 50
+        api:
+          type: completion
+          streaming: true
+        server:
+          type: vllm
+          model_name: MODEL
+          base_url: STACK_ENDPOINT
+          ignore_eos: true
+        tokenizer:
+          pretrained_model_name_or_path: TOKENIZER
+        data:
+          type: shared_prefix
+          shared_prefix:
+            num_groups: 32
+            num_prompts_per_group: 32
+            system_prompt_len: 2048
+            question_len: 256
+            output_len: 256
+        report:
+          request_lifecycle:
+            summary: true
+            per_stage: true
+            per_request: true
+        storage:
+          local_storage:
+            path: PATH
+    - name: treatment
+      value: 'data.shared_prefix.question_len=100
+
+        data.shared_prefix.output_len=100
+
+        '
+    - name: results_dir
+      value: $(params.experimentId)/stack-64-1000
+    - name: treatment_path
+      value: treatment-100_100
+  - name: delete-httproute-64-1000
+    description: Delete the HTTPRoute.
+    taskRef:
+      name: delete-httproute
+    runAfter:
+    - run-workload-64-1000-0
+    params:
+    - name: namespace
+      value: $(params.namespace)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: debug
+      value: $(params.debug)
+  - name: delete-model-64-1000
+    description: Delete the model engine and workload generator.
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-64-1000-0
+    params:
+    - name: namespace
+      value: $(params.namespace)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: debug
+      value: $(params.debug)
+  - name: delete-gaie-64-1000
+    description: Delete the gaie resources.
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-64-1000-0
+    params:
+    - name: namespace
+      value: $(params.namespace)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: debug
+      value: $(params.debug)
+  - name: analyze-results
+    description: Analyze results from all runs
+    taskRef:
+      name: analyze-inference-perf
+    runAfter:
+    - delete-model-64-1000
+    workspaces:
+    - name: source
+    - name: data
+    - name: hf-credentials
+    params:
+    - name: results_dir
+      value: $(params.experimentId)
+  finally:
+  - name: finally-delete-httproute-64-1000
+    taskRef:
+      name: delete-httproute
+    params:
+    - name: namespace
+      value: $(params.namespace)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: debug
+      value: $(params.debug)
+  - name: finally-delete-model-64-1000
+    taskRef:
+      name: delete-model
+    params:
+    - name: namespace
+      value: $(params.namespace)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: debug
+      value: $(params.debug)
+  - name: finally-delete-gaie-64-1000
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: namespace
+      value: $(params.namespace)
+    - name: modelLabel
+      value: stack-64-1000
+    - name: debug
+      value: $(params.debug)
+  - name: finally-delete-gateway
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: experimentId
+      value: $(params.experimentId)
+    - name: namespace
+      value: $(params.namespace)
+    - name: debug
+      value: $(params.debug)

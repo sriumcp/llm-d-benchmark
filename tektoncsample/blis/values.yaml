@@ -1,0 +1,312 @@
+experiment:
+  name: blis-test
+  description: Training pipeline for BLIS scenario 5
+
+stack:
+  treatments:
+    tensorParallelism:
+      # - 1
+      - 2
+      - 4
+
+  # MAX_MODEL_LEN: 4096
+  MAX_MODEL_LEN: 4096
+  # MAX_MODEL_LEN: 13312
+  MAX_NUM_BATCHED_TOKENS: 2048
+  MAX_NUM_SEQS: 256
+  # MAX_NUM_BATCHED_TOKENS: 64
+  # MAX_NUM_SEQS: 32
+
+  workload:
+    app: chatsweep
+    profile:
+      rate_type: sweep
+      max_requests: 50
+      rate: 12
+      random_seed: 42
+      data:
+        prefix_tokens: 284
+        prompt_tokens: 70
+        prompt_tokens_stdev: 35
+        prompt_tokens_min: 2
+        prompt_tokens_max: 200
+        output_tokens: 215
+        output_tokens_stdev: 80
+        output_tokens_min: 1
+        output_tokens_max: 512
+
+  # workload:
+  #   app: codesweep
+  #   profile:
+  #     rate_type: sweep
+  #     max_requests: 50
+  #     rate: 12
+  #     random_seed: 42
+  #     data:
+  #       prompt_tokens: 2048
+  #       prompt_tokens_stdev: 1974
+  #       prompt_tokens_min: 2
+  #       prompt_tokens_max: 3500
+  #       output_tokens: 28
+  #       output_tokens_stdev: 60
+  #       output_tokens_min: 6
+  #       output_tokens_max: 200
+
+  # workload:
+  #   app: train
+  #   profile:
+  #     rate_type: sweep
+  #     max_requests: 25
+  #     rate: 12
+  #     random_seed: 42
+  #     data:
+  #       prefix_tokens: 0
+  #       prompt_tokens: 1700
+  #       prompt_tokens_stdev: 1200
+  #       prompt_tokens_min: 2
+  #       prompt_tokens_max: 3500
+  #       output_tokens: 800
+  #       output_tokens_stdev: 500
+  #       output_tokens_min: 1
+  #       output_tokens_max: 500
+
+
+  # workload:
+  #   app: train
+  #   profile:
+  #     rate_type: sweep
+  #     max_requests: 50
+  #     rate: 12
+  #     random_seed: 42
+  #     data:
+  #       prefix_tokens: 0
+  #       prompt_tokens: 3500
+  #       prompt_tokens_stdev: 1500
+  #       prompt_tokens_min: 2
+  #       prompt_tokens_max: 7168
+  #       output_tokens: 200
+  #       output_tokens_stdev: 150
+  #       output_tokens_min: 1
+  #       output_tokens_max: 1024
+
+
+
+
+
+  # workload:
+  #   app: summarization
+  #   profile:
+  #     rate_type: sweep
+  #     max_requests: 40
+  #     rate: 5
+  #     random_seed: 42
+  #     data:
+  #       prefix_tokens: 820        
+  #       prompt_tokens: 4096
+  #       prompt_tokens_stdev: 500
+  #       prompt_tokens_min: 100
+  #       prompt_tokens_max: 7168
+  #       output_tokens: 512
+  #       output_tokens_stdev: 150
+  #       output_tokens_min: 10
+  #       output_tokens_max: 1024
+
+  # workload:
+  #   app: prefilldominant
+  #   profile:
+  #     rate_type: sweep
+  #     max_requests: 40
+  #     rate: 5
+  #     random_seed: 42
+  #     data:
+  #       prefix_tokens: 1024        
+  #       prompt_tokens: 2048
+  #       prompt_tokens_stdev: 500
+  #       prompt_tokens_min: 100
+  #       prompt_tokens_max: 4096
+  #       output_tokens: 32
+  #       output_tokens_stdev: 16
+  #       output_tokens_min: 1
+  #       output_tokens_max: 64
+  
+  # workload:
+  #   app: chatbot
+  #   profile:
+  #     rate_type: sweep
+  #     max_requests: 40
+  #     rate: 5
+  #     random_seed: 42
+  #     data:
+  #       prefix_tokens: 256
+  #       prompt_tokens: 256
+  #       prompt_tokens_stdev: 100
+  #       prompt_tokens_min: 2
+  #       prompt_tokens_max: 800
+  #       output_tokens: 256
+  #       output_tokens_stdev: 100
+  #       output_tokens_min: 1
+  #       output_tokens_max: 1024
+
+  # workload:
+  #   app: contentgen
+  #   profile:
+  #     rate_type: sweep
+  #     max_requests: 40
+  #     rate: 5
+  #     random_seed: 42
+  #     data:
+  #       prefix_tokens: 310        # ~30% of prompt
+  #       prompt_tokens: 1024
+  #       prompt_tokens_stdev: 150
+  #       prompt_tokens_min: 10
+  #       prompt_tokens_max: 2048
+  #       output_tokens: 1024
+  #       output_tokens_stdev: 200
+  #       output_tokens_min: 10
+  #       output_tokens_max: 2048
+
+
+
+  # workload:
+  #   app: doc
+  #   profile:
+  #     rate_type: sweep
+  #     max_requests: 25
+  #     rate: 5
+  #     random_seed: 42
+  #     data:
+  #       prefix_tokens: 1000       # ~10% of prompt
+  #       prompt_tokens: 9000
+  #       prompt_tokens_stdev: 1200
+  #       prompt_tokens_min: 500
+  #       prompt_tokens_max: 11000
+  #       output_tokens: 1536
+  #       output_tokens_stdev: 300
+  #       output_tokens_min: 50
+  #       output_tokens_max: 2000
+
+  model:
+    helmValues:
+      fullnameOverride: FULLNAME
+      serviceAccountOverride: default
+      multinode: false
+      modelArtifacts:
+        uri: pvc://model-pvc/models/MODEL
+        size: 300Gi
+        authSecretName: "hf-secret"
+        name: MODEL
+        labels:
+          llm-d.ai/inferenceServing: "true"
+          llm-d.ai/model: FULLNAME
+      routing:
+        servicePort: 8000
+        proxy:
+          enabled: false
+      prefill:
+        create: false
+      decode:
+        create: true
+        replicas: 1
+        acceleratorTypes:
+            labelKey: nvidia.com/gpu.product
+            labelValues:
+              - NVIDIA-H100-80GB-HBM3
+        parallelism:
+          data: 1
+          tensor: 1
+        initContainers:
+        - name: install-otel-dependencies
+          image: vllm/vllm-openai:v0.11.0
+          command: ["/bin/bash", "-c"]
+          args:
+          - |-
+            set -e
+            pip install --target=/deps \
+              'opentelemetry-sdk>=1.26.0,<1.27.0' \
+              'opentelemetry-api>=1.26.0,<1.27.0' \
+              'opentelemetry-exporter-otlp>=1.26.0,<1.27.0' \
+              'python-json-logger' \
+              'opentelemetry-semantic-conventions-ai>=0.4.1,<0.5.0'
+          volumeMounts:
+            - name: deps
+              mountPath: /deps
+        containers:
+        - name: "vllm"
+          env:
+            - name: PYTHONPATH
+              value: /deps
+            - name: OTEL_SERVICE_NAME
+              value: "vllm-exp1"
+            - name: OTEL_TRACES_SAMPLER
+              value: "traceidratio"
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: "1.0"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "http/protobuf"
+            - name: OTEL_EXPORTER_OTLP_TRACES_PROTOCOL
+              value: "http/protobuf"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-exp1:4318"
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: "http://otel-exp1:4318"
+            - name: VLLM_CONFIGURE_LOGGING
+              value: "1"
+            - name: VLLM_LOGGING_CONFIG_PATH
+              value: "/workspace/vllm_logging.json"
+            # - name: XDG_CACHE_HOME
+            #   value: "/workspace/.cache"
+          mountModelVolume: true
+          image: "vllm/vllm-openai:v0.11.0"
+          modelCommand: vllmServe
+          # args:
+          #   - "--trust-remote-code"
+          resources:
+            limits:
+              memory: 128Gi
+              cpu: "32"
+            requests:
+              memory: 128Gi
+              cpu: "32"
+          extraConfig:
+            startupProbe:
+              httpGet:
+                path: /health
+                port: 8000
+              failureThreshold: 60
+              initialDelaySeconds: 30
+              periodSeconds: 30
+              timeoutSeconds: 5
+            livenessProbe:
+              tcpSocket:
+                port: 8000
+              failureThreshold: 3
+              periodSeconds: 5
+            readinessProbe:
+              httpGet:
+                path: /health
+                port: 8000
+              failureThreshold: 3
+              periodSeconds: 5
+          volumeMounts: 
+          - name: data
+            mountPath: /mnt/exp
+          - name: deps
+            mountPath: /deps
+        volumes: 
+        - name: data
+          persistentVolumeClaim:
+            claimName: data-pvc
+        - name: deps
+          emptyDir: {}
+
+workload:
+  harness: guidellm
+
+upload_target:
+  type: s3
+  configuration:
+    bucket: cloud-object-storage-cos-standard-ere
+    endpoint: https://s3.us-east.cloud-object-storage.appdomain.cloud
+

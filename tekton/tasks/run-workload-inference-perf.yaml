@@ -1,0 +1,96 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: run-workload-inference-perf
+spec:
+  description: |
+    Run workload using inference-perf.
+
+  workspaces:
+    - name: source
+    - name: data
+    - name: hf-credentials
+
+  params:
+    - { name: model, type: string }
+    - { name: modelLabel, type: string }
+    - { name: url, type: string }
+    - { name: profileTemplate, type: string }
+    - { name: treatment, type: string }
+    - { name: results_dir, type: string }
+    - { name: treatment_path, type: string }
+
+  steps:
+    - name: augment-treatment-overrides
+      results:
+        - { name: merged-overrides }
+      env:
+        - { name: LOCAL_STORAGE_PATH, value: "$(workspaces.data.path)/$(params.results_dir)/$(params.treatment_path)/results" }
+      image: alpine/kubectl:1.34.1
+      script: |
+        #!/bin/sh
+        set -eu
+
+        printf "%s" "$(params.treatment)" > $(step.results.merged-overrides.path)
+        echo "server.model_name=$(params.model)" >> $(step.results.merged-overrides.path)
+        echo "server.base_url=$(params.url)" >> $(step.results.merged-overrides.path)
+        echo "tokenizer.pretrained_model_name_or_path=$(params.model)" >> $(step.results.merged-overrides.path)
+        echo "storage.local_storage.path=${LOCAL_STORAGE_PATH}" >> $(step.results.merged-overrides.path)
+
+    - name: apply-overrides
+      ref:
+        name: apply-overrides
+      params:
+        - name: inputYaml
+          value: "$(params.profileTemplate)"
+        - name: overrides
+          value: "$(steps.augment-treatment-overrides.results.merged-overrides)"
+
+    - name: log-profile
+      image: alpine:3.20
+      script: |
+        #!/bin/sh
+        set -eu
+
+        echo ">>> created profile:"
+        cat /workspace/output.yaml
+
+    - name: run
+      env:
+        - { name: HARNESS, value: inference-perf }
+        - { name: RESULTS_DIR, value: "$(workspaces.data.path)/$(params.results_dir)/$(params.treatment_path)/experiments" }
+        - { name: WORKLOAD_PROFILE_DIR, value: "$(workspaces.data.path)/$(params.results_dir)/$(params.treatment_path)/profiles/inference-perf" }
+      computeResources:
+        requests:
+          memory: "16Gi"
+          cpu: "8"
+        limits:
+          memory: "16Gi"
+          cpu: "8"
+      image: python:3.12.9-slim-bookworm
+      script: |
+        #!/usr/bin/env bash
+
+        $ make sure target directories exist
+        mkdir -p $RESULTS_DIR
+        mkdir -p $WORKLOAD_PROFILE_DIR
+
+        # Copy profile from workspace to experiment results dir
+        WORKLOAD_PROFILE="${WORKLOAD_PROFILE_DIR}/profile.yaml"
+        cp /workspace/output.yaml ${WORKLOAD_PROFILE}
+
+        # Load harness via virtual environment
+        HARNESS_DIR=$(workspaces.source.path)/harnesses
+        source ${HARNESS_DIR}/${HARNESS}.venv/bin/activate
+
+        # run inference-perf
+        export HF_TOKEN=$(cat "$(workspaces.hf-credentials.path)/HF_TOKEN")
+        inference-perf --config_file "$(realpath ${WORKLOAD_PROFILE})" > >(tee -a ${RESULTS_DIR}/stdout.log) 2> >(tee -a ${RESULTS_DIR}/stderr.log >&2)
+        export RC=$?
+
+        # If benchmark harness returned with an error, exit here
+        if [[ $RC -ne 0 ]]; then
+          echo "❌ Harness returned with error $RC"
+          exit $RC
+        fi
+        echo "✅ Harness completed successfully."

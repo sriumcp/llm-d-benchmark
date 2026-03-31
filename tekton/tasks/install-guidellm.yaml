@@ -1,0 +1,32 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: install-guidellm
+spec:
+  description: |
+    Install guidellm packages into the shared data workspace.
+
+  workspaces:
+    - name: data
+
+  steps:
+    - name: install-packages
+      image: python:3.12.9-slim-bookworm
+      script: |
+        #!/bin/sh
+        set -eux
+
+        echo "🔄 Installing required tools"
+        apt-get update -y
+        apt-get install -y git
+        # rm -rf /var/lib/apt/lists/*
+
+        TARGET="$(workspaces.data.path)/guidellm"
+
+        echo "📦 Installing guidellm into $TARGET"
+        mkdir -p "$TARGET"
+
+        pip install --target="$TARGET" \
+          git+https://github.com/vllm-project/guidellm.git
+
+        echo "✔ Done installing guidellm"

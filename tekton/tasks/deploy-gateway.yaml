@@ -1,0 +1,55 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-gateway
+spec:
+  description: |
+    Deploy a gateway.
+
+  params:
+    - { name: config, type: string }
+    - { name: experimentId, type: string }
+    - { name: namespace, type: string }
+    - { name: port, type: string, default: 80 }
+    - { name: startupTimeout, type: string, default: "600" }
+
+  results:
+    - name: gateway
+      description: name of gateway
+    - name: endpoint
+      description: endpoint of gateway (svc.namespace:port)
+
+  steps:
+    - name: install-gateway
+      ref: 
+        name: helm-upgrade-install
+      params:
+        - name: releaseName
+          value: $(params.experimentId)-gateway
+        - name: chart
+          value: llm-d-infra/llm-d-infra
+        - name: repoName
+          value: llm-d-infra
+        - name: repoUrl
+          value: https://llm-d-incubation.github.io/llm-d-infra/
+        
+        - name: namespace
+          value: $(params.namespace)
+        - name: timeout
+          value: 15m
+        - name: valuesYaml
+          value: "$(params.config)"
+
+    - name: record-results
+      env:
+        - { name: NAMESPACE, value: $(params.namespace) }
+        - { name: PORT, value: $(params.port) }
+      image: alpine:3.20
+      script: |
+        #!/bin/sh
+        set -eu
+
+        # Gateway name is the helm release name
+        RELEASE="$(params.experimentId)-gateway"
+        printf "%s" "${RELEASE}-inference-gateway" > $(results.gateway.path)
+        printf "%s" "${RELEASE}-inference-gateway.${NAMESPACE}:${PORT}" > $(results.endpoint.path)

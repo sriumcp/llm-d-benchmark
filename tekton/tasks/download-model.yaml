@@ -1,0 +1,42 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: download-model
+spec:
+  description: |
+    Deploy Kubernetes Gateway API Inference Extension.
+
+  workspaces:
+    - name: model-cache
+      mountPath: /cache
+    - name: hf-credentials
+      readOnly: true
+
+  params:
+    - name: model
+      type: string
+
+  steps:
+    - name: download-model
+      image: python:3.10
+      env:
+        - name: HOME
+          value: /tmp
+        - name: HF_HOME
+          value: /tmp/huggingface
+        - name: MOUNT_PATH
+          value: /cache # mount path of workspace model-cache
+        - name: HF_MODEL_ID
+          value: "$(params.model)"
+        - name: MODEL_PATH
+          value: "models/$(params.model)"
+      script: |
+        #!/bin/sh
+        set -eu
+
+        export HF_TOKEN=$(cat "$(workspaces.hf-credentials.path)/HF_TOKEN")
+        export PATH="${PATH}:${HOME}/.local/bin"
+        mkdir -p "${MOUNT_PATH}/${MODEL_PATH}"
+        python -m pip install huggingface_hub
+        hf auth login --token "${HF_TOKEN}"
+        hf download "${HF_MODEL_ID}" --local-dir "/cache/${MODEL_PATH}"

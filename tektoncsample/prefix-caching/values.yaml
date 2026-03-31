@@ -1,0 +1,352 @@
+# An experiment pipeline values file has 2 main sections that define the experiment:
+#
+# (a) stack - defines the default stack to be deployed and fields to vary. The 
+#             stack includes a gateway (shared by all deployed models), gateway API  
+#             inference extension configuration (one for each model), and the model.
+#
+# (b) workload - defines the workload that should be run against each stack. This is 
+#                specified by identifying the load generation harness, a default 
+#                configuration for it and fields to vary.
+# 
+# Other sections include:
+# - experiment - name and description to add for documenting the experiment
+# - upload-target - where the results of the experiment should be uploaded
+
+experiment:
+  name: prefix-caching
+  description: Prefix Caching
+
+# A model stack defines the default stack to be deployed including any gateway (shared 
+# by all deployed models), gateway API inference extension configuration (one for each
+# model), and the model.
+# This includes variation defined as factors or treatments. The pipeline template defines
+# which is used.
+# Note that tektonc is independent of the  terminology ("stack", "levels" and "treatment").
+# Other terms can be used. These terms are used to match those in llm-d-benchmark.
+stack:
+  # # You can specify a set of factors (for a set of values for each) over which 
+  # # the cartesian product of combinations of model stacks will be tested in parallel.
+  # # In this example, 3 x 2 = 6
+  # levels:
+  #   blockSize:
+  #     - 64
+  #     - 128
+  #     # - 256
+  #   numCpuBlocks:
+  #     - 1000
+  #     # - 10000
+  # # Alternatively, you can specify a specify specific combinations of factors
+  # # to test in parallel. In this case 3 model stacks will be tested.
+  # # treatments:
+  # #   - blockSize: 64
+  # #     numCpuBlocks: 1000
+  # #   - blockSize: 128
+  # #     numCpuBlocks: 1000
+  # #   - blockSize: 256
+  # #     numCpuBlocks: 10000
+
+  # default gateway configuration
+  # the configuration field is a helm values file
+  gateway:
+    configuration:
+      gateway:
+        gatewayClassName: kgateway
+        service:
+          type: NodePort
+        gatewayParameters:
+          enabled: true
+
+  # default gaie configuration        
+  # the configuration field is a helm values file
+  gaie:
+    configuration:
+      inferenceExtension:
+        replicas: 1
+        image:
+          name: llm-d-inference-scheduler
+          hub: ghcr.io/llm-d
+          tag: v0.3.2-with-sidecar-fix
+          pullPolicy: Always
+        extProcPort: 9002
+        extraContainerPorts:
+          - name: zmq
+            containerPort: 5557
+            protocol: TCP
+        extraServicePorts:
+          - name: zmq
+            port: 5557
+            targetPort: 5557
+            protocol: TCP
+        env:
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-secret
+                key: HF_TOKEN
+      inferencePool:
+        targetPortNumber: 8000
+        modelServerType: vllm
+        apiVersion: "inference.networking.x-k8s.io/v1alpha2"
+        modelServers:
+          matchLabels:
+            llm-d.ai/inferenceServing: "true"
+            llm-d.ai/model: qwen-qwen3-0-6b
+      provider:
+        name: none
+
+  # default model server configuration
+  # the configuration field is a helm values file
+  model:
+    configuration:
+      fullnameOverride: MODEL_LABEL
+      serviceAccountOverride: default
+      multinode: false
+      modelArtifacts:
+        uri: pvc://model-pvc/models/MODEL
+        size: 300Gi
+        authSecretName: "hf-secret"
+        name: MODEL
+      routing:
+        servicePort: 8000
+        proxy:
+          enable: true
+          image: "ghcr.io/llm-d/llm-d-routing-sidecar:v0.3.0"
+          secure: false
+          connector: nixl
+          debugLevel: 1
+
+      decode:
+        create: true
+        replicas: 1
+        acceleratorTypes:
+            labelKey: nvidia.com/gpu.product
+            labelValues:
+              - NVIDIA-H100-80GB-HBM3
+        parallelism:
+          data: 1
+          tensor: 1
+        annotations:
+            deployed-by: tekton
+            modelservice: llm-d-benchmark
+        podAnnotations:
+            deployed-by: tekton
+            modelservice: llm-d-benchmark
+        containers:
+        - name: "vllm"
+          mountModelVolume: true
+          image: "vllm/vllm-openai:v0.11.2"
+          modelCommand: vllmServe
+          args:
+            - --enforce-eager
+            - --disable-log-requests
+            - --disable-uvicorn-access-log
+          env:
+            - name: UCX_TLS
+              value: "cuda_ipc,cuda_copy,tcp"
+            - name: UCX_SOCKADDR_TLS_PRIORITY
+              value: "tcp"
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: "5557"
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: VLLM_LOGGING_LEVEL
+              value: DEBUG
+            - name: VLLM_ALLOW_LONG_MAX_MODEL_LEN
+              value: "1"
+          resources:
+            limits:
+              memory: 64Gi
+              cpu: "16"
+            requests:
+              memory: 64Gi
+              cpu: "16"
+          extraConfig:
+            startupProbe:
+              httpGet:
+                path: /health
+                port: 8200
+              failureThreshold: 60
+              initialDelaySeconds: 30
+              periodSeconds: 30
+              timeoutSeconds: 5
+            livenessProbe:
+              tcpSocket:
+                port: 8200
+              failureThreshold: 3
+              periodSeconds: 5
+            readinessProbe:
+              httpGet:
+                path: /health
+                port: 8200
+              failureThreshold: 3
+              periodSeconds: 5
+          
+            ports:
+              - containerPort: 5557
+                protocol: TCP
+              - containerPort: 8200
+                name: metrics
+                protocol: TCP
+          volumeMounts: []
+        volumes: []
+
+      prefill:
+        create: true
+        replicas: 0
+        acceleratorTypes:
+            labelKey: nvidia.com/gpu.product
+            labelValues:
+              - NVIDIA-H100-80GB-HBM3
+        parallelism:
+          data: 1
+          tensor: 1
+        annotations:
+            deployed-by: tekton
+            modelservice: llm-d-benchmark
+        podAnnotations:
+            deployed-by: tekton
+            modelservice: llm-d-benchmark
+        containers:
+        - name: "vllm"
+          mountModelVolume: true
+          image: "ghcr.io/llm-d/llm-d:v0.2.0"
+          modelCommand: vllmServe
+          args: []
+          env:
+            - name: VLLM_IS_PREFILL
+              value: "1"
+            - name: UCX_TLS
+              value: "cuda_ipc,cuda_copy,tcp"
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: "5557"
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: VLLM_LOGGING_LEVEL
+              value: DEBUG
+            - name: VLLM_ALLOW_LONG_MAX_MODEL_LEN
+              value: "1"
+          resources:
+            limits:
+              memory: 40Gi
+              cpu: "4"
+            requests:
+              memory: 40Gi
+              cpu: "4"
+          extraConfig:
+            startupProbe:
+              httpGet:
+                path: /health
+                port: 8000
+              failureThreshold: 60
+              initialDelaySeconds: 30
+              periodSeconds: 30
+              timeoutSeconds: 5
+            livenessProbe:
+              tcpSocket:
+                port: 8000
+              failureThreshold: 3
+              periodSeconds: 5
+            readinessProbe:
+              httpGet:
+                path: /health
+                port: 8000
+              failureThreshold: 3
+              periodSeconds: 5
+            ports:
+              - containerPort: 5557
+                protocol: TCP
+              - containerPort: 8200
+                name: metrics
+                protocol: TCP
+          volumeMounts: []
+        volumes: []
+
+# the workload that should be run against each stack. Specified by identifying the 
+# load generation harness, a default configuration for it and fields to vary.
+# As with the stack, varying fields can be specified using levels or treatments.
+workload:
+  # # levels:
+  # #   question_len: []
+  # #   output_len: []
+  # treatments:
+  #   - question_len: 100
+  #     output_len: 100
+  #   # - question_len: 100
+  #   #   output_len: 200
+  #   # - question_len: 100
+  #   #   output_len: 1000
+  #   # - question_len: 300
+  #   #   output_len: 100
+  #   # - question_len: 300
+  #   #   output_len: 300
+  #   # - question_len: 300
+  #   #   output_len: 1000
+  #   # - question_len: 1000
+  #   #   output_len: 100
+  #   - question_len: 1000
+  #     output_len: 300
+  #   # - question_len: 1000
+  #   #   output_len: 1000
+
+  # The workload harness to be used for load generation and data collection
+  harness: inference-perf
+  # default configuration for the specific harness
+  # This is the llm-d-benchmark profile:
+  #    workload/profiles/inference-perf/shared_prefix_synthetic.yaml.in
+  profileTemplate:
+    load:
+      type: constant
+      stages:
+      - rate: 2
+        duration: 50
+      - rate: 5
+        duration: 50
+      # - rate: 8
+      #   duration: 50
+      # - rate: 10
+      #   duration: 50
+      # - rate: 12
+      #   duration: 50
+      # - rate: 15
+      #   duration: 50
+      # - rate: 20
+      #   duration: 50
+    api:
+      type: completion
+      streaming: true
+    server:
+      type: vllm
+      model_name: MODEL
+      base_url: STACK_ENDPOINT
+      ignore_eos: true
+    tokenizer:
+      pretrained_model_name_or_path: TOKENIZER
+    data:
+      type: shared_prefix
+      shared_prefix:
+        num_groups: 32                # Number of distinct shared prefixes
+        num_prompts_per_group: 32     # Number of unique questions per shared prefix
+        system_prompt_len: 2048       # Length of the shared prefix (in tokens)
+        question_len: 256             # Length of the unique question part (in tokens)
+        output_len: 256               # Target length for the model's generated output (in tokens)
+    report:
+      request_lifecycle:
+        summary: true
+        per_stage: true
+        per_request: true
+    storage:
+      local_storage:
+        path: PATH
+
+# Target to which experiment configuration and results should be sent
+# The set of fields are type specific
+upload_target:
+  type: s3
+  configuration:
+    bucket: cloud-object-storage-cos-standard-ere
+    endpoint: https://s3.us-east.cloud-object-storage.appdomain.cloud
+

@@ -1,0 +1,434 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: blis-rh-run
+spec:
+  timeouts:
+    pipeline: 6h        # overall PipelineRun
+    tasks: 5h30m          # per-task timeout
+  taskRunTemplate:
+    serviceAccountName: helm-installer
+  workspaces:
+    - name: data
+      persistentVolumeClaim:
+        claimName: data-pvc
+    - name: target-credentials
+      secret:
+        secretName: s3-secret
+        items:
+          - key: AWS_ACCESS_KEY_ID
+            path: AWS_ACCESS_KEY_ID
+          - key: AWS_SECRET_ACCESS_KEY
+            path: AWS_SECRET_ACCESS_KEY
+
+  pipelineRef:
+    name: blis-rh-train
+  params:
+    - { name: experimentId, value: "Dec18-blis-rh2" }
+    - { name: namespace, value: mert }
+    - { name: num_iter, value: 500 }
+    - name: stack
+      value:
+        variations: 
+## keeping only new dated data
+
+          - LLM_NAME: redhatai/phi-4-fp8-dynamic
+            TP: 1
+            GPU: H100
+            vllm_version: vllm/vllm-openai:v0.8.4
+
+          - LLM_NAME: redhatai/phi-4-fp8-dynamic
+            TP: 2
+            GPU: H100
+            vllm_version: vllm/vllm-openai:v0.8.4
+
+          - LLM_NAME: redhatai/phi-4-quantized.w4a16
+            TP: 1
+            GPU: H100
+            vllm_version: vllm/vllm-openai:v0.8.4
+
+          - LLM_NAME: redhatai/phi-4-quantized.w4a16
+            TP: 2
+            GPU: H100
+            vllm_version: vllm/vllm-openai:v0.8.4
+
+          - LLM_NAME: redhatai/phi-4-quantized.w8a8
+            TP: 1
+            GPU: H100
+            vllm_version: vllm/vllm-openai:v0.8.4
+
+          - LLM_NAME: redhatai/phi-4-quantized.w8a8
+            TP: 2
+            GPU: H100
+            vllm_version: vllm/vllm-openai:v0.8.4
+
+          - LLM_NAME: meta-llama/llama-4-maverick-17b-128e-instruct-fp8
+            TP: 8
+            GPU: H100
+            vllm_version: vllm/vllm-openai:v0.8.4
+
+          - LLM_NAME: meta-llama/llama-4-scout-17b-16e-instruct
+            TP: 4
+            GPU: H100
+            vllm_version: vllm/vllm-openai:v0.8.4
+
+          - LLM_NAME: nvidia/llama-3.1-nemotron-70b-instruct-hf
+            TP: 4
+            GPU: H100
+            vllm_version: vllm/vllm-openai:v0.8.4
+
+
+          # - LLM_NAME: redhatai/llama-3.1-nemotron-70b-instruct-hf-fp8-dynamic
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-3.1-nemotron-70b-instruct-hf-fp8-dynamic
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-3.3-70b-instruct-fp8-dynamic
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-3.3-70b-instruct-fp8-dynamic
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-3.3-70b-instruct-quantized.w4a16
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-3.3-70b-instruct-quantized.w8a8
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-3.3-70b-instruct-quantized.w8a8
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-4-scout-17b-16e-instruct-fp8-dynamic
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-4-scout-17b-16e-instruct-fp8-dynamic
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-4-scout-17b-16e-instruct-fp8-dynamic
+          #   TP: 8
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/llama-4-scout-17b-16e-instruct-quantized.w4a16
+          #   TP: 8
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+
+          # - LLM_NAME: redhatai/qwen2.5-7b-instruct-fp8-dynamic
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/qwen2.5-7b-instruct-fp8-dynamic
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/qwen2.5-7b-instruct-fp8-dynamic
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/qwen2.5-7b-instruct-quantized.w4a16
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/qwen2.5-7b-instruct-quantized.w4a16
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/qwen2.5-7b-instruct-quantized.w4a16
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/qwen2.5-7b-instruct-quantized.w8a8
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/qwen2.5-7b-instruct-quantized.w8a8
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # - LLM_NAME: redhatai/qwen2.5-7b-instruct-quantized.w8a8
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+#####
+          # - LLM_NAME: openai/gpt-oss-120b
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+          # - LLM_NAME: openai/gpt-oss-20b
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+
+
+          # - LLM_NAME: openai/gpt-oss-120b
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+          # - LLM_NAME: openai/gpt-oss-20b
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+          # - LLM_NAME: openai/gpt-oss-120b
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+          # - LLM_NAME: openai/gpt-oss-20b
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+          # - LLM_NAME: openai/gpt-oss-120b
+          #   TP: 8
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+          # - LLM_NAME: openai/gpt-oss-20b
+          #   TP: 8
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+
+          # - LLM_NAME: ibm-granite/granite-3.1-8b-instruct
+          # #   TP: 1
+          # #   GPU: H100
+          # #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: ibm-granite/granite-3.1-8b-instruct
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: ibm-granite/granite-3.1-8b-instruct
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: ibm-granite/granite-3.1-8b-instruct
+          #   TP: 1
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: ibm-granite/granite-3.1-8b-instruct
+          #   TP: 2
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: meta-llama/llama-3.1-8b-instruct
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: meta-llama/llama-3.1-8b-instruct
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: meta-llama/llama-3.1-8b-instruct
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: meta-llama/llama-3.1-8b-instruct
+          #   TP: 1
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: meta-llama/llama-3.1-8b-instruct
+          #   TP: 2
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: meta-llama/llama-3.1-8b-instruct
+          #   TP: 4
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: qwen/qwen2.5-7b-instruct
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: qwen/qwen2.5-7b-instruct
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: qwen/qwen2.5-7b-instruct
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: qwen/qwen2.5-7b-instruct
+          #   TP: 1
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: qwen/qwen2.5-7b-instruct
+          #   TP: 2
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: qwen/qwen2.5-7b-instruct
+          #   TP: 4
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+
+          # # -----------------------------
+          # # NEW: microsoft phi-4
+          # # -----------------------------
+          # - LLM_NAME: microsoft/phi-4
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: microsoft/phi-4
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: microsoft/phi-4
+          #   TP: 1
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: microsoft/phi-4
+          #   TP: 2
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # # -----------------------------
+          # # NEW: llama-3.3-70B
+          # # -----------------------------
+          # - LLM_NAME: meta-llama/llama-3.3-70b-instruct
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: meta-llama/llama-3.3-70b-instruct
+          #   TP: 8
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: meta-llama/llama-3.3-70b-instruct
+          #   TP: 4
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # # -----------------------------
+          # # NEW: openai gpt-oss-120b
+          # # -----------------------------
+          # - LLM_NAME: openai/gpt-oss-120b
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+          # - LLM_NAME: openai/gpt-oss-120b
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+          # - LLM_NAME: openai/gpt-oss-120b
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+          # - LLM_NAME: openai/gpt-oss-120b
+          #   TP: 8
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+          # # -----------------------------
+          # # NEW: openai gpt-oss-20b
+          # # -----------------------------
+          # - LLM_NAME: openai/gpt-oss-20b
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+          # - LLM_NAME: openai/gpt-oss-20b
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+          # - LLM_NAME: openai/gpt-oss-20b
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+          # - LLM_NAME: openai/gpt-oss-20b
+          #   TP: 8
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.10.1.1
+
+          # # -----------------------------
+          # # NEW: mistral-24B-instruct-2501
+          # # -----------------------------
+          # - LLM_NAME: mistralai/mistral-small-24b-instruct-2501
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: mistralai/mistral-small-24b-instruct-2501
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: mistralai/mistral-small-24b-instruct-2501
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: mistralai/mistral-small-24b-instruct-2501
+          #   TP: 1
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: mistralai/mistral-small-24b-instruct-2501
+          #   TP: 2
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: mistralai/mistral-small-24b-instruct-2501
+          #   TP: 4
+          #   GPU: A100-80
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # # -----------------------------
+          # # NEW: mistral-3.1-24B-instruct-2503
+          # # -----------------------------
+          # - LLM_NAME: mistralai/mistral-small-3.1-24b-instruct-2503
+          #   TP: 1
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: mistralai/mistral-small-3.1-24b-instruct-2503
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: mistralai/mistral-small-3.1-24b-instruct-2503
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: mistralai/mistral-small-3.1-24b-instruct-2503
+          #   TP: 8
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+          # # -----------------------------
+          # # NEW: mixtral-8×7B
+          # # -----------------------------
+          # - LLM_NAME: mistralai/mixtral-8x7b-instruct-v0.1
+          #   TP: 2
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+          # - LLM_NAME: mistralai/mixtral-8x7b-instruct-v0.1
+          #   TP: 4
+          #   GPU: H100
+          #   vllm_version: vllm/vllm-openai:v0.8.4
+
+
+
+

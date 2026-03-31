@@ -1,0 +1,145 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: run-workload-guidellm
+spec:
+  description: |
+    Run workload using guidellm.
+
+  workspaces:
+    - name: data
+    - name: hf-credentials
+
+  params:
+    - name: modelLabel
+      type: string
+    - name: results_dir
+      type: string
+    - name: max_requests
+      type: string
+    - name: rate
+      type: string
+    - name: rate_type
+      type: string
+    - name: random_seed
+      type: string
+    - name: prefix_tokens
+      type: string
+    - name: prompt_tokens
+      type: string
+    - name: prompt_tokens_stdev
+      type: string
+    - name: prompt_tokens_min
+      type: string
+    - name: prompt_tokens_max
+      type: string
+    - name: output_tokens
+      type: string
+    - name: output_tokens_stdev
+      type: string
+    - name: output_tokens_min
+      type: string
+    - name: output_tokens_max
+      type: string
+
+
+  steps:
+    - name: create-profile
+      env:
+        - name: MODEL_LABEL
+          value: "$(params.modelLabel)"
+      image: alpine/kubectl:1.34.1
+      script: |
+        #!/bin/sh
+        set -eu
+
+        # TBD - move out of this task and pass as parameter or via results
+        podIP=$(kubectl get po -l llm-d.ai/model=${MODEL_LABEL},llm-d.ai/role=decode -o jsonpath='{.items[0].status.podIP}')
+        targetUrl="http://${podIP}:8000"
+
+        WORKLOAD_PROFILE="$(workspaces.data.path)/$(params.results_dir)/profile.yaml"
+
+        mkdir -p "$(workspaces.data.path)/$(params.results_dir)"
+
+        cat <<EOF > "${WORKLOAD_PROFILE}"
+        target: "${targetUrl}"
+        rate-type: $(params.rate_type)
+        max-requests: $(params.max_requests)
+        rate: $(params.rate)
+        random-seed: $(params.random_seed)
+        data:
+          prefix_tokens: $(params.prefix_tokens)
+          prompt_tokens: $(params.prompt_tokens)
+          prompt_tokens_stdev: $(params.prompt_tokens_stdev)
+          prompt_tokens_min: $(params.prompt_tokens_min)
+          prompt_tokens_max: $(params.prompt_tokens_max)
+          output_tokens: $(params.output_tokens)
+          output_tokens_stdev: $(params.output_tokens_stdev)
+          output_tokens_min: $(params.output_tokens_min)
+          output_tokens_max: $(params.output_tokens_max)
+        EOF
+
+
+    - name: log-profile
+      image: alpine:3.20
+      script: |
+        #!/bin/sh
+        set -eu
+
+        WORKLOAD_PROFILE="$(workspaces.data.path)/$(params.results_dir)/profile.yaml"
+        echo ">>> created profile:"
+        cat "${WORKLOAD_PROFILE}"
+
+    - name: run-workload
+      image: python:3.12.9-slim-bookworm
+      script: |
+        #!/bin/sh
+        set -eu
+
+        ROOT_DIR="$(workspaces.data.path)/$(params.results_dir)"
+        mkdir -p "$(workspaces.data.path)/$(params.results_dir)"
+        
+        WORKLOAD_PROFILE="${ROOT_DIR}/profile.yaml"
+        RESULTS="${ROOT_DIR}/guidellm-results.json"
+        echo "ROOT_DIR=${ROOT_DIR}"
+        echo "WORKLOAD_PROFILE=${WORKLOAD_PROFILE}"
+        echo "RESULTS=${RESULTS}"
+
+        echo "🔄 Installing required tools"
+        apt-get update
+        apt-get install -y \
+          git \
+          && apt-get clean && rm -rf /var/cache/apt
+
+        # PIP_CACHE="$(workspaces.data.path)/.pip-cache"
+        # mkdir -p "${PIP_CACHE}"
+
+        # pip install --cache-dir="${PIP_CACHE}" git+https://github.com/vllm-project/guidellm.git
+        # pip install --no-cache-dir git+https://github.com/vllm-project/guidellm.git
+        # sleep random here plz
+        # SLEEP_TIME=$(od -An -N2 -i /dev/urandom | awk '{print $1 % 300}')
+        # echo "Sleeping for ${SLEEP_TIME} seconds to stagger pip install..."
+        # sleep $SLEEP_TIME
+        # pip install git+https://github.com/vllm-project/guidellm.git
+
+        # export PYTHONPATH=$(workspaces.data.path)/guidellm:$PYTHONPATH
+        export PYTHONPATH="$(workspaces.data.path)/guidellm"
+
+
+        export HF_TOKEN=$(cat "$(workspaces.hf-credentials.path)/HF_TOKEN")
+
+        # run guidellm
+        python -m guidellm benchmark \
+          --scenario "${WORKLOAD_PROFILE}" \
+          --output-path "${RESULTS}" \
+          --request-type text_completions 
+        # \ --request-formatter-kwargs '{"stream": false}'
+
+        export RC=$?
+
+        # If benchmark harness returned with an error, exit here
+        if [ $RC -ne 0 ]; then
+          echo "❌ Harness returned with error $RC"
+          exit $RC
+        fi
+        echo "✅ Harness completed successfully."

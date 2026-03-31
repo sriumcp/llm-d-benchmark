@@ -1,0 +1,104 @@
+# BLIS training pipeline
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: {{ experiment.name | dns }}
+spec:
+  {% if experiment.description is defined and experiment.description %}
+  description: {{ experiment.description }}
+  {% endif %}
+
+  workspaces:
+    - name: model-cache
+      description: Location where models are stored; shared by multiple model servers
+    - name: hf-credentials
+      description: Secret workspace containing a HuggingFace token
+    - name: data
+      description: Cache of training results
+    - name: target-credentials
+      description: >-
+        Secret workspace containing upload target credentials. 
+        For example, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for s3.
+
+  params:
+    - name: experimentId
+      type: string
+      description: Identifier for experiment execution
+    - name: model
+      type: string
+      description: the model to be deployed for training
+    - name: namespace
+      type: string
+      description: Kubernetes namespace where training will execute
+
+  tasks:
+   
+    # Loop: Run stacks (different model engine configurations) in parallel
+    - loopName: per-stack
+      foreach:
+        domain:
+          tp: {{ stack.treatments.tensorParallelism }}
+
+      vars:
+        stackId: "{{ tp }}"
+        stackModelLabel:  "$(params.experimentId)-{{ tp }}"
+
+      tasks:
+        - name: train-preprocess-{{ stackId }}
+          taskRef: { name: train-preprocess }
+          workspaces:
+            - name: data
+          params:
+            - { name: results_dir, value: "{{ stackModelLabel }}" }
+
+        - name: train-blis-from-guidellm-{{ stackId }}
+          taskRef: { name: train-blis-from-guidellm }
+          workspaces:
+            - name: data
+          params:
+            - { name: results_dir, value: "{{ stackModelLabel }}" }
+
+        {% if upload_target is defined and upload_target %}
+        - name: processed-upload-{{ stackId }}
+          description: Upload 
+          taskRef: { name: upload-{{ upload_target.type }} }
+          runAfter: [ "train-blis-from-guidellm-{{ stackId }}" ]
+          workspaces:
+            - name: data
+            - name: target-credentials
+          params:
+            - name: archive
+              value: "{{ stackModelLabel }}-processed.tar.gz"
+            - name: paths
+              value: |
+                {{ stackModelLabel }}/postprocessdata.txt
+                
+            - { name: target, value: {{ upload_target.configuration }} }
+        {% endif %}
+
+        # should we delete results from shared data workspace?
+
+  finally:
+    # Loop in 'finally': make all stacks are deleted when done
+    # Should we also delete results?
+    - loopName: cleanup
+      foreach:
+        domain:
+          tp: {{ stack.treatments.tensorParallelism }}
+
+      vars:
+        stackId: "{{ tp }}"
+        stackModelLabel:  "$(params.experimentId)-{{ tp }}"
+
+      tasks:
+        - name: finally-delete-model-{{ stackId }}
+          taskRef: { name: delete-model }
+          params:
+            - { name: namespace, value: "$(params.namespace)" }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+
+        - name: finally-delete-otel-collector-{{ stackId }}
+          taskRef: { name: delete-otel-collector }
+          params:
+            - { name: namespace, value: "$(params.namespace)" }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }

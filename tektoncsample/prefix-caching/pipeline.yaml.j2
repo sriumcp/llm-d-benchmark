@@ -1,0 +1,267 @@
+# Inference Scheduling example benchmark
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: {{ experiment.name | dns }}
+spec:
+  {% if experiment.description is defined and experiment.description %}
+  description: {{ experiment.description }}
+  {% endif %}
+
+  workspaces:
+    - name: model-cache
+      description: Location where models are stored; shared by multiple model servers
+    - name: hf-credentials
+      description: Secret workspace containing a HuggingFace token
+    - name: data
+      description: Workspace of results
+    - name: source
+      description: Location where source is cached
+    - name: target-credentials
+      description: >-
+        Secret workspace containing upload target credentials. 
+        For example, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY for s3.
+
+  params:
+    - name: experimentId
+      type: string
+      description: Identifier for experiment execution
+    - name: model
+      type: string
+      description: the model to be deployed for training
+    - name: namespace
+      type: string
+      description: Kubernetes namespace where training will execute
+    - name: debug
+      type: string
+      default: "false"
+      description: Flag indicating whether or not to delete deployed objects (no when debug true)
+
+  tasks:
+
+    - name: deploy-gateway
+      description: |
+        Deploy one gateway for experiment.
+        Used by all concurrent model deployments.
+      taskRef: { name: deploy-gateway }
+      params:
+        - { name: experimentId, value: $(params.experimentId) }
+        - { name: namespace , value: $(params.namespace) }
+        - { name: config, value: {{ stack.gateway.configuration }} }
+
+    - name: download-model
+      description: Download model from HuggingFace.
+      taskRef: { name: download-model }
+      workspaces:
+        - name: model-cache
+        - name: hf-credentials
+      params:
+        - name: model
+          value: "$(params.model)"
+
+    - name: install-workload-harness
+      description: |
+        Install workload harness
+      taskRef: { name: install-{{ workload.harness }} }
+      workspaces:
+        - name: source
+
+    - name: install-data-convertion-tools
+      description: |
+        Install tools to convert harness output to universal format.
+      taskRef: { name: install-convert }
+      workspaces: 
+        - name: source
+
+    # Loop: Run stacks (different model engine configurations) in parallel
+    - loopName: per-stack
+      foreach:
+        domain:
+          blockSize: {{ stack.levels.blockSize }}
+          numCpuBlocks: {{ stack.levels.numCpuBlocks }}
+      vars:
+        # stackId is used to distinquish between different model stacks and to avoid 
+        # object name conflicts
+        stackId: "{{ blockSize }}-{{ numCpuBlocks }}"
+        # stackModelLabel is used to distinguish between models and to configure traffic
+        stackModelLabel: "stack-{{ blockSize }}-{{ numCpuBlocks }}"
+        # lastWorkloadTreatmentIdx identifies the last workload treatment (for cleanup)
+        lastWorkloadTreatmentIdx: "{{ (workload.treatments|length) - 1 }}"
+
+      tasks:
+
+        - name: deploy-gaie-{{ stackId }}
+          description: Configure GAIE for each stack.
+          taskRef: { name: deploy-gaie }
+          runAfter: [ deploy-gateway ]
+          params:
+            - { name: namespace , value: $(params.namespace) }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+            - { name: config, value: {{ stack.gaie.configuration }} }
+
+        - name: deploy-model-{{ stackId }}
+          taskRef: { name: deploy-model }
+          runAfter: [ "download-model" ]
+          workspaces:
+            - name: model-cache
+          params:
+            - { name: model, value: $(params.model) }
+            - { name: modelLabel, value: "{{ stackModelLabel }}"}
+            - { name: namespace , value: $(params.namespace) }
+            - { name: config, value: {{ stack.model.configuration }} }
+            - name: overrides
+              value:
+                - decode.replicas=1
+                - decode.resources.limits.cpu=16
+                - decode.resources.limits.memory=64Gi
+                - decode.resources.requests.cpu=16
+                - decode.resources.requests.memory=64Gi
+                - decode.containers[name="vllm"].args=--kv-transfer-config={"kv_connector":"OffloadingConnector","kv_role":"kv_both","kv_connector_extra_config":{"block_size":{{ blockSize }},"num_cpu_blocks":{{ numCpuBlocks }} }}
+                - decode.containers[name="vllm"].args=--max-model-len=16000
+                - decode.acceleratorTypes.labelKey="nvidia.com/gpu.product"
+                - decode.acceleratorTypes.labelValues=NVIDIA-H100-80GB-HBM3
+                - prefill.create=false
+
+        - name: deploy-httproute-{{ stackId }}
+          description: Create HttpRoute to route traffic with modelLabel in path to the deployed model engines.
+          taskRef: 
+            name: deploy-httproute
+          runAfter: [ "deploy-gaie-{{ stackId }}", deploy-gateway ]
+          params:
+            - { name: gateway, value: $(tasks.deploy-gateway.results.gateway) }
+            - { name: inferencepool, value: "$(tasks.deploy-gaie-{{ stackId }}.results.inferencepool)" }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+            - { name: namespace, value: $(params.namespace) }
+
+        # run workload
+        # loop through workload configurations
+        - loopName: per-workload
+          foreach:
+            domain:
+              treatment_i: {{ enumerate_list(workload.treatments) }}
+          vars: 
+            taskPostfix: "{{ stackId }}-{{ treatment_i.i }}"
+            resultsPath: "$(params.experimentId)/{{ stackModelLabel }}"
+            treatmentLabel: "treatment-{{ treatment_i.item.output_len }}_{{ treatment_i.item.question_len }}"
+
+          tasks:
+            - __jinja__: |
+                - name: run-workload-{{ taskPostfix }}
+                  taskRef: { name: run-workload-{{ workload.harness }} }
+                  runAfter:
+                    - deploy-model-{{ stackId }}
+                    - deploy-httproute-{{ stackId }}
+                    - install-workload-harness
+                    {% if not treatment_i.is_first %}
+                    - run-workload-{{ stackId }}-{{ treatment_i.prev_i }}
+                    {% endif %}
+                  workspaces:
+                    - name: source
+                    - name: data
+                    - name: hf-credentials
+                  params:
+                    - { name: model, value: $(params.model) }
+                    - { name: modelLabel, value: {{ stackModelLabel }} }
+                    - { name: url, value: http://$(tasks.deploy-gateway.results.endpoint)/{{ stackModelLabel }} }
+                    - { name: profileTemplate, value: {{ workload.profileTemplate }} }
+                    - name: treatment
+                      value: |
+                        data.shared_prefix.question_len={{ treatment_i.item.question_len }}
+                        data.shared_prefix.output_len={{ treatment_i.item.output_len }}
+                    - { name: results_dir, value: "{{ resultsPath }}" }
+                    - { name: treatment_path, value: "{{ treatmentLabel }}" }
+
+        # after workloads completed, clean up stack
+        - name: delete-httproute-{{ stackId }}
+          description: Delete the HTTPRoute.
+          taskRef: { name: delete-httproute }
+          runAfter: [ "run-workload-{{ stackId }}-{{ lastWorkloadTreatmentIdx }}" ]
+          params:
+            - { name: namespace , value: $(params.namespace) }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+            - { name: debug, value: $(params.debug) }
+
+        - name: delete-model-{{ stackId }}
+          description: Delete the model engine and workload generator.
+          taskRef: { name: delete-model }
+          runAfter: [ "run-workload-{{ stackId }}-{{ lastWorkloadTreatmentIdx }}" ]
+          params:
+            - { name: namespace , value: $(params.namespace) }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+            - { name: debug, value: $(params.debug) }
+
+        - name: delete-gaie-{{ stackId }}
+          description: Delete the gaie resources.
+          taskRef: { name: delete-gaie }
+          runAfter: [ "run-workload-{{ stackId }}-{{ lastWorkloadTreatmentIdx }}" ]
+          params:
+            - { name: namespace , value: $(params.namespace) }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+            - { name: debug, value: $(params.debug) }
+
+    # We rely on the finally block to delete this
+    # It is hard to express all the dependencies when using 
+    # levels.
+    {# - name: delete-gateway
+      description: Delete gateway
+      taskRef: { name: delete-gateway } #}
+
+    # analyze results when all done
+    - name: analyze-results
+      description: Analyze results from all runs
+      taskRef: { name: analyze-{{ workload.harness }} }
+      runAfter:
+      {% for i in stack.levels.blockSize %}
+      {% for j in stack.levels.numCpuBlocks %}
+        - "delete-model-{{ i }}-{{ j }}"
+      {% endfor %}
+      {% endfor %}
+      workspaces:
+        - name: source
+        - name: data
+        - name: hf-credentials
+      params:
+        - { name: results_dir, value: "$(params.experimentId)" }
+
+
+  finally:
+    # Loop in 'finally': make all stacks are deleted when done
+    # Should we also delete results (assuming they were uploaded)
+    - loopName: cleanup
+      foreach:
+        domain:
+          blockSize: {{ stack.levels.blockSize }}
+          numCpuBlocks: {{ stack.levels.numCpuBlocks }}
+
+      vars:
+        stackId: "{{ blockSize }}-{{ numCpuBlocks }}"
+        stackModelLabel:  "stack-{{ blockSize }}-{{ numCpuBlocks }}"
+
+      tasks:
+        - name: finally-delete-httproute-{{ stackId }}
+          taskRef: { name: delete-httproute }
+          params:
+            - { name: namespace , value: $(params.namespace) }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+            - { name: debug, value: $(params.debug) }
+
+        - name: finally-delete-model-{{ stackId }}
+          taskRef: { name: delete-model }
+          params:
+            - { name: namespace , value: $(params.namespace) }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+            - { name: debug, value: $(params.debug) }
+
+        - name: finally-delete-gaie-{{ stackId }}
+          taskRef: { name: delete-gaie }
+          params:
+            - { name: namespace , value: $(params.namespace) }
+            - { name: modelLabel, value: "{{ stackModelLabel }}" }
+            - { name: debug, value: $(params.debug) }
+
+    - name: finally-delete-gateway
+      taskRef: { name: delete-gateway }
+      params:
+        - { name: experimentId, value: $(params.experimentId) }
+        - { name: namespace , value: $(params.namespace) }
+        - { name: debug, value: $(params.debug) }

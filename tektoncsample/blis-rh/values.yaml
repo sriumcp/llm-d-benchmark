@@ -1,0 +1,9 @@
+experiment:
+  name: blis-rh-train
+  description: Training pipeline for BLIS scenario 6
+upload_target:
+  type: s3
+  configuration:
+    bucket: cloud-object-storage-cos-standard-ere
+    endpoint: https://s3.us-east.cloud-object-storage.appdomain.cloud
+

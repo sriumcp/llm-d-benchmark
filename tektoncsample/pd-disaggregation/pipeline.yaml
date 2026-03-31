@@ -1,0 +1,2523 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: pd-disaggregation
+spec:
+  description: Sample PD Disaggregation Experiment
+  workspaces:
+  - name: model-cache
+    description: Workspace to hold models shared by model servers
+  - name: results
+    description: Workspace of results from workload generators
+  - name: credentials
+    description: Optional workspace with credentials if needed by a task
+  tasks:
+  - name: log-start
+    taskRef:
+      name: echo
+    params:
+    - name: text
+      value: 'Starting pipeline "pd-disaggregation"
+
+        Assumes that secret/hf-secret is defined with field HF_TOKEN'
+  - name: deploy-gateway
+    taskRef:
+      name: deploy-helm
+    results:
+    - name: gateway
+      type: string
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1036fe480>
+    - name: repo
+      value: llm-d-infra
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-infra/
+  - name: deploy-gaie-1_8_8_1
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-1_8_8_1
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x103187f00>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=llama-3-1-8b-instruct-0
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: HF_TOKEN
+  - name: deploy-model-1_8_8_1
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-1_8_8_1
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1030f0d80>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=meta-llama/Llama-3.1-8B-Instruct
+      - modelArtifacts.uri="pvc://model-pvc/models/meta-llama/Llama-3.1-8B-Instruct"
+      - fullnameOverride=llama-3-1-8b-instruct-0
+      - routing.inferencePool.name="$(tasks.gaie-1_8_8_1.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-1_8_8_1.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-1_8_8_1.results.inferencepool)"
+  - name: deploy-httproute-1_8_8_1
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-1_8_8_1
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-1_8_8_1.results.inferencepool)
+    - name: model_label
+      value: llama-3-1-8b-instruct-0
+  - name: create-workload-profile-1_8_8_1-0
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '1'
+        num-prompts: '10'
+  - name: run-workload-1_8_8_1-0
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_8_1-0
+    - run-workload-profile-1_8_8_1--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_8_1-0.results.profile)
+    - name: path
+      value: 1_8_8_1-1_10
+  - name: tranform-workload-results-1_8_8_1-0
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_8_1-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_8_1-1_10
+    - name: targetPath
+      value: 1_8_8_1-1_10/converted
+  - name: create-workload-profile-1_8_8_1-1
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '8'
+        num-prompts: '80'
+  - name: run-workload-1_8_8_1-1
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_8_1-1
+    - run-workload-profile-1_8_8_1-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_8_1-1.results.profile)
+    - name: path
+      value: 1_8_8_1-8_80
+  - name: tranform-workload-results-1_8_8_1-1
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_8_1-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_8_1-8_80
+    - name: targetPath
+      value: 1_8_8_1-8_80/converted
+  - name: create-workload-profile-1_8_8_1-2
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '32'
+        num-prompts: '320'
+  - name: run-workload-1_8_8_1-2
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_8_1-2
+    - run-workload-profile-1_8_8_1-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_8_1-2.results.profile)
+    - name: path
+      value: 1_8_8_1-32_320
+  - name: tranform-workload-results-1_8_8_1-2
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_8_1-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_8_1-32_320
+    - name: targetPath
+      value: 1_8_8_1-32_320/converted
+  - name: create-workload-profile-1_8_8_1-3
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '64'
+        num-prompts: '640'
+  - name: run-workload-1_8_8_1-3
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_8_1-3
+    - run-workload-profile-1_8_8_1-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_8_1-3.results.profile)
+    - name: path
+      value: 1_8_8_1-64_640
+  - name: tranform-workload-results-1_8_8_1-3
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_8_1-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_8_1-64_640
+    - name: targetPath
+      value: 1_8_8_1-64_640/converted
+  - name: create-workload-profile-1_8_8_1-4
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '128'
+        num-prompts: '1280'
+  - name: run-workload-1_8_8_1-4
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_8_1-4
+    - run-workload-profile-1_8_8_1-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_8_1-4.results.profile)
+    - name: path
+      value: 1_8_8_1-128_1280
+  - name: tranform-workload-results-1_8_8_1-4
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_8_1-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_8_1-128_1280
+    - name: targetPath
+      value: 1_8_8_1-128_1280/converted
+  - name: create-workload-profile-1_8_8_1-5
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '256'
+        num-prompts: '2560'
+  - name: run-workload-1_8_8_1-5
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_8_1-5
+    - run-workload-profile-1_8_8_1-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_8_1-5.results.profile)
+    - name: path
+      value: 1_8_8_1-256_2560
+  - name: tranform-workload-results-1_8_8_1-5
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_8_1-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_8_1-256_2560
+    - name: targetPath
+      value: 1_8_8_1-256_2560/converted
+  - name: delete-model-1_8_8_1
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_1_8_8_1_256_2560
+    params:
+    - name: releaseName
+      value: model-1_8_8_1
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-1_8_8_1
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_1_8_8_1_256_2560
+    params:
+    - name: releaseName
+      value: model-1_8_8_1
+    - name: namespace
+      value: $(params.namespace)
+  - name: deploy-gaie-1_8_4_2
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-1_8_4_2
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x103187f00>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=llama-3-1-8b-instruct-1
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: HF_TOKEN
+  - name: deploy-model-1_8_4_2
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-1_8_4_2
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1030f0d80>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=meta-llama/Llama-3.1-8B-Instruct
+      - modelArtifacts.uri="pvc://model-pvc/models/meta-llama/Llama-3.1-8B-Instruct"
+      - fullnameOverride=llama-3-1-8b-instruct-1
+      - routing.inferencePool.name="$(tasks.gaie-1_8_4_2.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-1_8_4_2.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-1_8_4_2.results.inferencepool)"
+  - name: deploy-httproute-1_8_4_2
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-1_8_4_2
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-1_8_4_2.results.inferencepool)
+    - name: model_label
+      value: llama-3-1-8b-instruct-1
+  - name: create-workload-profile-1_8_4_2-0
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '1'
+        num-prompts: '10'
+  - name: run-workload-1_8_4_2-0
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_4_2-0
+    - run-workload-profile-1_8_4_2--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_4_2-0.results.profile)
+    - name: path
+      value: 1_8_4_2-1_10
+  - name: tranform-workload-results-1_8_4_2-0
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_4_2-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_4_2-1_10
+    - name: targetPath
+      value: 1_8_4_2-1_10/converted
+  - name: create-workload-profile-1_8_4_2-1
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '8'
+        num-prompts: '80'
+  - name: run-workload-1_8_4_2-1
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_4_2-1
+    - run-workload-profile-1_8_4_2-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_4_2-1.results.profile)
+    - name: path
+      value: 1_8_4_2-8_80
+  - name: tranform-workload-results-1_8_4_2-1
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_4_2-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_4_2-8_80
+    - name: targetPath
+      value: 1_8_4_2-8_80/converted
+  - name: create-workload-profile-1_8_4_2-2
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '32'
+        num-prompts: '320'
+  - name: run-workload-1_8_4_2-2
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_4_2-2
+    - run-workload-profile-1_8_4_2-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_4_2-2.results.profile)
+    - name: path
+      value: 1_8_4_2-32_320
+  - name: tranform-workload-results-1_8_4_2-2
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_4_2-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_4_2-32_320
+    - name: targetPath
+      value: 1_8_4_2-32_320/converted
+  - name: create-workload-profile-1_8_4_2-3
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '64'
+        num-prompts: '640'
+  - name: run-workload-1_8_4_2-3
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_4_2-3
+    - run-workload-profile-1_8_4_2-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_4_2-3.results.profile)
+    - name: path
+      value: 1_8_4_2-64_640
+  - name: tranform-workload-results-1_8_4_2-3
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_4_2-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_4_2-64_640
+    - name: targetPath
+      value: 1_8_4_2-64_640/converted
+  - name: create-workload-profile-1_8_4_2-4
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '128'
+        num-prompts: '1280'
+  - name: run-workload-1_8_4_2-4
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_4_2-4
+    - run-workload-profile-1_8_4_2-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_4_2-4.results.profile)
+    - name: path
+      value: 1_8_4_2-128_1280
+  - name: tranform-workload-results-1_8_4_2-4
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_4_2-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_4_2-128_1280
+    - name: targetPath
+      value: 1_8_4_2-128_1280/converted
+  - name: create-workload-profile-1_8_4_2-5
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '256'
+        num-prompts: '2560'
+  - name: run-workload-1_8_4_2-5
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_4_2-5
+    - run-workload-profile-1_8_4_2-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_4_2-5.results.profile)
+    - name: path
+      value: 1_8_4_2-256_2560
+  - name: tranform-workload-results-1_8_4_2-5
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_4_2-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_4_2-256_2560
+    - name: targetPath
+      value: 1_8_4_2-256_2560/converted
+  - name: delete-model-1_8_4_2
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_1_8_4_2_256_2560
+    params:
+    - name: releaseName
+      value: model-1_8_4_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-1_8_4_2
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_1_8_4_2_256_2560
+    params:
+    - name: releaseName
+      value: model-1_8_4_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: deploy-gaie-1_8_2_4
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-1_8_2_4
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x103187f00>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=llama-3-1-8b-instruct-2
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: HF_TOKEN
+  - name: deploy-model-1_8_2_4
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-1_8_2_4
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1030f0d80>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=meta-llama/Llama-3.1-8B-Instruct
+      - modelArtifacts.uri="pvc://model-pvc/models/meta-llama/Llama-3.1-8B-Instruct"
+      - fullnameOverride=llama-3-1-8b-instruct-2
+      - routing.inferencePool.name="$(tasks.gaie-1_8_2_4.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-1_8_2_4.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-1_8_2_4.results.inferencepool)"
+  - name: deploy-httproute-1_8_2_4
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-1_8_2_4
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-1_8_2_4.results.inferencepool)
+    - name: model_label
+      value: llama-3-1-8b-instruct-2
+  - name: create-workload-profile-1_8_2_4-0
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '1'
+        num-prompts: '10'
+  - name: run-workload-1_8_2_4-0
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_2_4-0
+    - run-workload-profile-1_8_2_4--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_2_4-0.results.profile)
+    - name: path
+      value: 1_8_2_4-1_10
+  - name: tranform-workload-results-1_8_2_4-0
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_2_4-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_2_4-1_10
+    - name: targetPath
+      value: 1_8_2_4-1_10/converted
+  - name: create-workload-profile-1_8_2_4-1
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '8'
+        num-prompts: '80'
+  - name: run-workload-1_8_2_4-1
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_2_4-1
+    - run-workload-profile-1_8_2_4-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_2_4-1.results.profile)
+    - name: path
+      value: 1_8_2_4-8_80
+  - name: tranform-workload-results-1_8_2_4-1
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_2_4-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_2_4-8_80
+    - name: targetPath
+      value: 1_8_2_4-8_80/converted
+  - name: create-workload-profile-1_8_2_4-2
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '32'
+        num-prompts: '320'
+  - name: run-workload-1_8_2_4-2
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_2_4-2
+    - run-workload-profile-1_8_2_4-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_2_4-2.results.profile)
+    - name: path
+      value: 1_8_2_4-32_320
+  - name: tranform-workload-results-1_8_2_4-2
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_2_4-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_2_4-32_320
+    - name: targetPath
+      value: 1_8_2_4-32_320/converted
+  - name: create-workload-profile-1_8_2_4-3
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '64'
+        num-prompts: '640'
+  - name: run-workload-1_8_2_4-3
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_2_4-3
+    - run-workload-profile-1_8_2_4-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_2_4-3.results.profile)
+    - name: path
+      value: 1_8_2_4-64_640
+  - name: tranform-workload-results-1_8_2_4-3
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_2_4-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_2_4-64_640
+    - name: targetPath
+      value: 1_8_2_4-64_640/converted
+  - name: create-workload-profile-1_8_2_4-4
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '128'
+        num-prompts: '1280'
+  - name: run-workload-1_8_2_4-4
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_2_4-4
+    - run-workload-profile-1_8_2_4-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_2_4-4.results.profile)
+    - name: path
+      value: 1_8_2_4-128_1280
+  - name: tranform-workload-results-1_8_2_4-4
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_2_4-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_2_4-128_1280
+    - name: targetPath
+      value: 1_8_2_4-128_1280/converted
+  - name: create-workload-profile-1_8_2_4-5
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '256'
+        num-prompts: '2560'
+  - name: run-workload-1_8_2_4-5
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_8_2_4-5
+    - run-workload-profile-1_8_2_4-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_8_2_4-5.results.profile)
+    - name: path
+      value: 1_8_2_4-256_2560
+  - name: tranform-workload-results-1_8_2_4-5
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_8_2_4-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_8_2_4-256_2560
+    - name: targetPath
+      value: 1_8_2_4-256_2560/converted
+  - name: delete-model-1_8_2_4
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_1_8_2_4_256_2560
+    params:
+    - name: releaseName
+      value: model-1_8_2_4
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-1_8_2_4
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_1_8_2_4_256_2560
+    params:
+    - name: releaseName
+      value: model-1_8_2_4
+    - name: namespace
+      value: $(params.namespace)
+  - name: deploy-gaie-1_4_6_2
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-1_4_6_2
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x103187f00>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=llama-3-1-8b-instruct-3
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: HF_TOKEN
+  - name: deploy-model-1_4_6_2
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-1_4_6_2
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1030f0d80>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=meta-llama/Llama-3.1-8B-Instruct
+      - modelArtifacts.uri="pvc://model-pvc/models/meta-llama/Llama-3.1-8B-Instruct"
+      - fullnameOverride=llama-3-1-8b-instruct-3
+      - routing.inferencePool.name="$(tasks.gaie-1_4_6_2.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-1_4_6_2.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-1_4_6_2.results.inferencepool)"
+  - name: deploy-httproute-1_4_6_2
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-1_4_6_2
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-1_4_6_2.results.inferencepool)
+    - name: model_label
+      value: llama-3-1-8b-instruct-3
+  - name: create-workload-profile-1_4_6_2-0
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '1'
+        num-prompts: '10'
+  - name: run-workload-1_4_6_2-0
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_4_6_2-0
+    - run-workload-profile-1_4_6_2--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_4_6_2-0.results.profile)
+    - name: path
+      value: 1_4_6_2-1_10
+  - name: tranform-workload-results-1_4_6_2-0
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_4_6_2-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_4_6_2-1_10
+    - name: targetPath
+      value: 1_4_6_2-1_10/converted
+  - name: create-workload-profile-1_4_6_2-1
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '8'
+        num-prompts: '80'
+  - name: run-workload-1_4_6_2-1
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_4_6_2-1
+    - run-workload-profile-1_4_6_2-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_4_6_2-1.results.profile)
+    - name: path
+      value: 1_4_6_2-8_80
+  - name: tranform-workload-results-1_4_6_2-1
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_4_6_2-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_4_6_2-8_80
+    - name: targetPath
+      value: 1_4_6_2-8_80/converted
+  - name: create-workload-profile-1_4_6_2-2
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '32'
+        num-prompts: '320'
+  - name: run-workload-1_4_6_2-2
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_4_6_2-2
+    - run-workload-profile-1_4_6_2-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_4_6_2-2.results.profile)
+    - name: path
+      value: 1_4_6_2-32_320
+  - name: tranform-workload-results-1_4_6_2-2
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_4_6_2-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_4_6_2-32_320
+    - name: targetPath
+      value: 1_4_6_2-32_320/converted
+  - name: create-workload-profile-1_4_6_2-3
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '64'
+        num-prompts: '640'
+  - name: run-workload-1_4_6_2-3
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_4_6_2-3
+    - run-workload-profile-1_4_6_2-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_4_6_2-3.results.profile)
+    - name: path
+      value: 1_4_6_2-64_640
+  - name: tranform-workload-results-1_4_6_2-3
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_4_6_2-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_4_6_2-64_640
+    - name: targetPath
+      value: 1_4_6_2-64_640/converted
+  - name: create-workload-profile-1_4_6_2-4
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '128'
+        num-prompts: '1280'
+  - name: run-workload-1_4_6_2-4
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_4_6_2-4
+    - run-workload-profile-1_4_6_2-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_4_6_2-4.results.profile)
+    - name: path
+      value: 1_4_6_2-128_1280
+  - name: tranform-workload-results-1_4_6_2-4
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_4_6_2-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_4_6_2-128_1280
+    - name: targetPath
+      value: 1_4_6_2-128_1280/converted
+  - name: create-workload-profile-1_4_6_2-5
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '256'
+        num-prompts: '2560'
+  - name: run-workload-1_4_6_2-5
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-1_4_6_2-5
+    - run-workload-profile-1_4_6_2-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-1_4_6_2-5.results.profile)
+    - name: path
+      value: 1_4_6_2-256_2560
+  - name: tranform-workload-results-1_4_6_2-5
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-1_4_6_2-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 1_4_6_2-256_2560
+    - name: targetPath
+      value: 1_4_6_2-256_2560/converted
+  - name: delete-model-1_4_6_2
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_1_4_6_2_256_2560
+    params:
+    - name: releaseName
+      value: model-1_4_6_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-1_4_6_2
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_1_4_6_2_256_2560
+    params:
+    - name: releaseName
+      value: model-1_4_6_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: deploy-gaie-2_4_4_2
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-2_4_4_2
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x103187f00>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=llama-3-1-8b-instruct-4
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: HF_TOKEN
+  - name: deploy-model-2_4_4_2
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-2_4_4_2
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1030f0d80>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=meta-llama/Llama-3.1-8B-Instruct
+      - modelArtifacts.uri="pvc://model-pvc/models/meta-llama/Llama-3.1-8B-Instruct"
+      - fullnameOverride=llama-3-1-8b-instruct-4
+      - routing.inferencePool.name="$(tasks.gaie-2_4_4_2.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-2_4_4_2.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-2_4_4_2.results.inferencepool)"
+  - name: deploy-httproute-2_4_4_2
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-2_4_4_2
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-2_4_4_2.results.inferencepool)
+    - name: model_label
+      value: llama-3-1-8b-instruct-4
+  - name: create-workload-profile-2_4_4_2-0
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '1'
+        num-prompts: '10'
+  - name: run-workload-2_4_4_2-0
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-2_4_4_2-0
+    - run-workload-profile-2_4_4_2--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-2_4_4_2-0.results.profile)
+    - name: path
+      value: 2_4_4_2-1_10
+  - name: tranform-workload-results-2_4_4_2-0
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-2_4_4_2-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 2_4_4_2-1_10
+    - name: targetPath
+      value: 2_4_4_2-1_10/converted
+  - name: create-workload-profile-2_4_4_2-1
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '8'
+        num-prompts: '80'
+  - name: run-workload-2_4_4_2-1
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-2_4_4_2-1
+    - run-workload-profile-2_4_4_2-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-2_4_4_2-1.results.profile)
+    - name: path
+      value: 2_4_4_2-8_80
+  - name: tranform-workload-results-2_4_4_2-1
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-2_4_4_2-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 2_4_4_2-8_80
+    - name: targetPath
+      value: 2_4_4_2-8_80/converted
+  - name: create-workload-profile-2_4_4_2-2
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '32'
+        num-prompts: '320'
+  - name: run-workload-2_4_4_2-2
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-2_4_4_2-2
+    - run-workload-profile-2_4_4_2-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-2_4_4_2-2.results.profile)
+    - name: path
+      value: 2_4_4_2-32_320
+  - name: tranform-workload-results-2_4_4_2-2
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-2_4_4_2-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 2_4_4_2-32_320
+    - name: targetPath
+      value: 2_4_4_2-32_320/converted
+  - name: create-workload-profile-2_4_4_2-3
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '64'
+        num-prompts: '640'
+  - name: run-workload-2_4_4_2-3
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-2_4_4_2-3
+    - run-workload-profile-2_4_4_2-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-2_4_4_2-3.results.profile)
+    - name: path
+      value: 2_4_4_2-64_640
+  - name: tranform-workload-results-2_4_4_2-3
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-2_4_4_2-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 2_4_4_2-64_640
+    - name: targetPath
+      value: 2_4_4_2-64_640/converted
+  - name: create-workload-profile-2_4_4_2-4
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '128'
+        num-prompts: '1280'
+  - name: run-workload-2_4_4_2-4
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-2_4_4_2-4
+    - run-workload-profile-2_4_4_2-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-2_4_4_2-4.results.profile)
+    - name: path
+      value: 2_4_4_2-128_1280
+  - name: tranform-workload-results-2_4_4_2-4
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-2_4_4_2-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 2_4_4_2-128_1280
+    - name: targetPath
+      value: 2_4_4_2-128_1280/converted
+  - name: create-workload-profile-2_4_4_2-5
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '256'
+        num-prompts: '2560'
+  - name: run-workload-2_4_4_2-5
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-2_4_4_2-5
+    - run-workload-profile-2_4_4_2-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-2_4_4_2-5.results.profile)
+    - name: path
+      value: 2_4_4_2-256_2560
+  - name: tranform-workload-results-2_4_4_2-5
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-2_4_4_2-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 2_4_4_2-256_2560
+    - name: targetPath
+      value: 2_4_4_2-256_2560/converted
+  - name: delete-model-2_4_4_2
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_2_4_4_2_256_2560
+    params:
+    - name: releaseName
+      value: model-2_4_4_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-2_4_4_2
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_2_4_4_2_256_2560
+    params:
+    - name: releaseName
+      value: model-2_4_4_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: deploy-gaie-3_4_2_2
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - deploy-gateway
+    results:
+    - name: inferencepool
+      type: string
+    params:
+    - name: releaseName
+      value: gaie-3_4_2_2
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x103187f00>
+    - name: version
+      value: v1.0.1
+    - name: extraSets
+      value:
+      - inferencepool.matchLabels.ll-d.ai/model=llama-3-1-8b-instruct-5
+  - name: download-model
+    taskRef:
+      name: download-model
+    workspaces:
+    - name: model-cache
+    params:
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: HF_TOKEN
+  - name: deploy-model-3_4_2_2
+    taskRef:
+      name: deploy-helm
+    runAfter:
+    - download-model
+    results:
+    - name: serviceUrl
+      type: string
+    params:
+    - name: releaseName
+      value: model-3_4_2_2
+    - name: namespace
+      value: $(params.namespace)
+    - name: valuesObject
+      value: <built-in method values of dict object at 0x1030f0d80>
+    - name: version
+      value: modelchartversion
+    - name: repo
+      value: llm-d-modelservice
+    - name: repoUrl
+      value: https://llm-d-incubation.github.io/llm-d-modelservice/
+    - name: extraSets
+      value:
+      - modelArtifacts.name=meta-llama/Llama-3.1-8B-Instruct
+      - modelArtifacts.uri="pvc://model-pvc/models/meta-llama/Llama-3.1-8B-Instruct"
+      - fullnameOverride=llama-3-1-8b-instruct-5
+      - routing.inferencePool.name="$(tasks.gaie-3_4_2_2.results.inferencepool)"
+      - routing.httpRoute.rules[0].backendRefs[0].name="$(tasks.gaie-3_4_2_2.results.inferencepool)"
+      - routing.httpRoute.rules[1].backendRefs[0].name="$(tasks.gaie-3_4_2_2.results.inferencepool)"
+  - name: deploy-httproute-3_4_2_2
+    taskRef: deploy-httproute
+    runAfter:
+    - deploy-gaie-3_4_2_2
+    - deploy-gateway
+    params:
+    - name: gateway
+      value: $(tasks.deploy-gateway.results.gateway)
+    - name: inferencepool
+      value: $(tasks.deploy-gaie-3_4_2_2.results.inferencepool)
+    - name: model_label
+      value: llama-3-1-8b-instruct-5
+  - name: create-workload-profile-3_4_2_2-0
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '1'
+        num-prompts: '10'
+  - name: run-workload-3_4_2_2-0
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-3_4_2_2-0
+    - run-workload-profile-3_4_2_2--1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-3_4_2_2-0.results.profile)
+    - name: path
+      value: 3_4_2_2-1_10
+  - name: tranform-workload-results-3_4_2_2-0
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-3_4_2_2-0
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 3_4_2_2-1_10
+    - name: targetPath
+      value: 3_4_2_2-1_10/converted
+  - name: create-workload-profile-3_4_2_2-1
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '8'
+        num-prompts: '80'
+  - name: run-workload-3_4_2_2-1
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-3_4_2_2-1
+    - run-workload-profile-3_4_2_2-0
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-3_4_2_2-1.results.profile)
+    - name: path
+      value: 3_4_2_2-8_80
+  - name: tranform-workload-results-3_4_2_2-1
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-3_4_2_2-1
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 3_4_2_2-8_80
+    - name: targetPath
+      value: 3_4_2_2-8_80/converted
+  - name: create-workload-profile-3_4_2_2-2
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '32'
+        num-prompts: '320'
+  - name: run-workload-3_4_2_2-2
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-3_4_2_2-2
+    - run-workload-profile-3_4_2_2-1
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-3_4_2_2-2.results.profile)
+    - name: path
+      value: 3_4_2_2-32_320
+  - name: tranform-workload-results-3_4_2_2-2
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-3_4_2_2-2
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 3_4_2_2-32_320
+    - name: targetPath
+      value: 3_4_2_2-32_320/converted
+  - name: create-workload-profile-3_4_2_2-3
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '64'
+        num-prompts: '640'
+  - name: run-workload-3_4_2_2-3
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-3_4_2_2-3
+    - run-workload-profile-3_4_2_2-2
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-3_4_2_2-3.results.profile)
+    - name: path
+      value: 3_4_2_2-64_640
+  - name: tranform-workload-results-3_4_2_2-3
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-3_4_2_2-3
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 3_4_2_2-64_640
+    - name: targetPath
+      value: 3_4_2_2-64_640/converted
+  - name: create-workload-profile-3_4_2_2-4
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '128'
+        num-prompts: '1280'
+  - name: run-workload-3_4_2_2-4
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-3_4_2_2-4
+    - run-workload-profile-3_4_2_2-3
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-3_4_2_2-4.results.profile)
+    - name: path
+      value: 3_4_2_2-128_1280
+  - name: tranform-workload-results-3_4_2_2-4
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-3_4_2_2-4
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 3_4_2_2-128_1280
+    - name: targetPath
+      value: 3_4_2_2-128_1280/converted
+  - name: create-workload-profile-3_4_2_2-5
+    taskRef:
+      name: create-workload-profile-vllm-benchmark
+    results:
+    - name: profile
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profileTemplate
+      value: random_concurrent.yaml
+    - name: model
+      value: meta-llama/Llama-3.1-8B-Instruct
+    - name: url
+      value: url
+    - name: treatment
+      value:
+        max-concurrency: '256'
+        num-prompts: '2560'
+  - name: run-workload-3_4_2_2-5
+    taskRef:
+      name: run-workload-vllm-benchmark
+    runAfter:
+    - create-workload-profile-3_4_2_2-5
+    - run-workload-profile-3_4_2_2-4
+    workspaces:
+    - name: results
+    params:
+    - name: harness
+      value: vllm-benchmark
+    - name: profile
+      value: $(tasks.create-workload-profile-3_4_2_2-5.results.profile)
+    - name: path
+      value: 3_4_2_2-256_2560
+  - name: tranform-workload-results-3_4_2_2-5
+    taskRef:
+      name: transform-results-vllm-benchmark
+    runAfter:
+    - run-workload-3_4_2_2-5
+    workspaces:
+    - name: results
+    params:
+    - name: sourcePath
+      value: 3_4_2_2-256_2560
+    - name: targetPath
+      value: 3_4_2_2-256_2560/converted
+  - name: delete-model-3_4_2_2
+    taskRef:
+      name: delete-model
+    runAfter:
+    - run-workload-inference_perf_3_4_2_2_256_2560
+    params:
+    - name: releaseName
+      value: model-3_4_2_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-3_4_2_2
+    taskRef:
+      name: delete-gaie
+    runAfter:
+    - run-workload-inference_perf_3_4_2_2_256_2560
+    params:
+    - name: releaseName
+      value: model-3_4_2_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: document
+    taskRef:
+      name: document
+    runAfter:
+    - delete-model-1_8_8_1
+    - delete-gaie-1_8_8_1
+    - delete-model-1_8_4_2
+    - delete-gaie-1_8_4_2
+    - delete-model-1_8_2_4
+    - delete-gaie-1_8_2_4
+    - delete-model-1_4_6_2
+    - delete-gaie-1_4_6_2
+    - delete-model-2_4_4_2
+    - delete-gaie-2_4_4_2
+    - delete-model-3_4_2_2
+    - delete-gaie-3_4_2_2
+    workspaces:
+    - name: results
+  - name: upload
+    taskRef:
+      name: upload-s3
+    runAfter:
+    - document
+    params:
+    - name: paths
+      value:
+      - 1_8_8_1-1_10
+      - 1_8_8_1-1_10/converted
+      - 1_8_8_1-8_80
+      - 1_8_8_1-8_80/converted
+      - 1_8_8_1-32_320
+      - 1_8_8_1-32_320/converted
+      - 1_8_8_1-64_640
+      - 1_8_8_1-64_640/converted
+      - 1_8_8_1-128_1280
+      - 1_8_8_1-128_1280/converted
+      - 1_8_8_1-256_2560
+      - 1_8_8_1-256_2560/converted
+      - 1_8_4_2-1_10
+      - 1_8_4_2-1_10/converted
+      - 1_8_4_2-8_80
+      - 1_8_4_2-8_80/converted
+      - 1_8_4_2-32_320
+      - 1_8_4_2-32_320/converted
+      - 1_8_4_2-64_640
+      - 1_8_4_2-64_640/converted
+      - 1_8_4_2-128_1280
+      - 1_8_4_2-128_1280/converted
+      - 1_8_4_2-256_2560
+      - 1_8_4_2-256_2560/converted
+      - 1_8_2_4-1_10
+      - 1_8_2_4-1_10/converted
+      - 1_8_2_4-8_80
+      - 1_8_2_4-8_80/converted
+      - 1_8_2_4-32_320
+      - 1_8_2_4-32_320/converted
+      - 1_8_2_4-64_640
+      - 1_8_2_4-64_640/converted
+      - 1_8_2_4-128_1280
+      - 1_8_2_4-128_1280/converted
+      - 1_8_2_4-256_2560
+      - 1_8_2_4-256_2560/converted
+      - 1_4_6_2-1_10
+      - 1_4_6_2-1_10/converted
+      - 1_4_6_2-8_80
+      - 1_4_6_2-8_80/converted
+      - 1_4_6_2-32_320
+      - 1_4_6_2-32_320/converted
+      - 1_4_6_2-64_640
+      - 1_4_6_2-64_640/converted
+      - 1_4_6_2-128_1280
+      - 1_4_6_2-128_1280/converted
+      - 1_4_6_2-256_2560
+      - 1_4_6_2-256_2560/converted
+      - 2_4_4_2-1_10
+      - 2_4_4_2-1_10/converted
+      - 2_4_4_2-8_80
+      - 2_4_4_2-8_80/converted
+      - 2_4_4_2-32_320
+      - 2_4_4_2-32_320/converted
+      - 2_4_4_2-64_640
+      - 2_4_4_2-64_640/converted
+      - 2_4_4_2-128_1280
+      - 2_4_4_2-128_1280/converted
+      - 2_4_4_2-256_2560
+      - 2_4_4_2-256_2560/converted
+      - 3_4_2_2-1_10
+      - 3_4_2_2-1_10/converted
+      - 3_4_2_2-8_80
+      - 3_4_2_2-8_80/converted
+      - 3_4_2_2-32_320
+      - 3_4_2_2-32_320/converted
+      - 3_4_2_2-64_640
+      - 3_4_2_2-64_640/converted
+      - 3_4_2_2-128_1280
+      - 3_4_2_2-128_1280/converted
+      - 3_4_2_2-256_2560
+      - 3_4_2_2-256_2560/converted
+    - name: target
+      value:
+        bucket: cloud-object-storage-cos-standard-ere
+        endpoint: https://s3.us-east.cloud-object-storage.appdomain.cloud
+    workspaces:
+    - name: source
+    - name: credentials
+  finally:
+  - name: delete-model-1_8_8_1
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-1_8_8_1
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-1_8_8_1
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-1_8_8_1
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-1_8_8_1
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-model-1_8_4_2
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-1_8_4_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-1_8_4_2
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-1_8_4_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-1_8_4_2
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-model-1_8_2_4
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-1_8_2_4
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-1_8_2_4
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-1_8_2_4
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-1_8_2_4
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-model-1_4_6_2
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-1_4_6_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-1_4_6_2
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-1_4_6_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-1_4_6_2
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-model-2_4_4_2
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-2_4_4_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-2_4_4_2
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-2_4_4_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-2_4_4_2
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-model-3_4_2_2
+    taskRef:
+      name: delete-model
+    params:
+    - name: releaseName
+      value: model-3_4_2_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gaie-3_4_2_2
+    taskRef:
+      name: delete-gaie
+    params:
+    - name: releaseName
+      value: model-3_4_2_2
+    - name: namespace
+      value: $(params.namespace)
+  - name: delete-gateway-3_4_2_2
+    taskRef:
+      name: delete-gateway
+    params:
+    - name: releaseName
+      value: gateway
+    - name: namespace
+      value: $(params.namespace)

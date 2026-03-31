@@ -1,0 +1,58 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: install-convert
+spec:
+  description: |
+    Install code to convert to universal benchmark data format.
+
+  workspaces:
+    - name: source
+
+  steps:
+    - name: install-convert
+      env:
+        - { name: GIT_URL, value: "https://api.github.com/repos/llm-d/llm-d-benchmark/contents" }
+        - { name: ROOT_DIR, value: "workload/report" }
+        - { name: BRANCH, value: main }
+
+      image: python:3.12.9-slim-bookworm
+      script: |
+        #!/bin/bash
+        set -eux
+
+        if [ -e "$(workspaces.source.path)/convert" ]; then
+          echo "✅ Data convertion tool already installed."
+          exit 0
+        fi
+        mkdir -p $(workspaces.source.path)/convert
+        cd $(workspaces.source.path)/convert
+        pip install requests
+
+        echo "📦 Installing data convertion tool"
+        cat <<EOF | python
+        import os
+        import requests
+
+        GIT_URL = os.getenv("GIT_URL")
+        ROOT_DIR = os.getenv("ROOT_DIR")
+        BRANCH = os.getenv("BRANCH")
+        
+        api = f"{GIT_URL}/{ROOT_DIR}?ref={BRANCH}"
+        headers = {}
+
+        resp = requests.get(api, headers={})
+        resp.raise_for_status()
+        for item in resp.json():
+            if item.get("type") == "file" and item["name"].endswith(".py"):
+                url = item["download_url"]
+                r = requests.get(url, headers=headers)
+                r.raise_for_status()
+                with open(item["name"], "wb") as f:
+                    f.write(r.content)
+                print("Downloaded", item["name"])
+        EOF
+
+        chmod +x convert.py schema.py
+        ls -l
+        echo "✅ Data convertion tool installed."

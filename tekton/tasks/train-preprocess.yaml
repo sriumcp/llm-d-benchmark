@@ -1,0 +1,39 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: train-preprocess
+spec:
+  description: |
+    Delete model engines
+  
+  workspaces:
+    - name: data
+
+  params:
+    - name: results_dir
+      type: string
+  
+  steps:
+    - name: placeholder
+      image: python:3.12.9-slim-bookworm
+      script: |
+        #!/bin/sh
+        set -eu
+        echo "train-preprocess called"
+
+        echo "🔄 Installing required tools"
+        apt-get update
+        apt-get install -y \
+          git \
+          && apt-get clean && rm -rf /var/cache/apt
+
+        git clone -b scenario5 https://github.com/inference-sim/vllm-data-collection.git
+        cd vllm-data-collection
+        pip install -r requirements.txt
+        
+        RESULTS_DIR="$(workspaces.data.path)/$(params.results_dir)"
+        GUIDELLM_RESULTS="$RESULTS_DIR/guidellm-results.json"
+        
+        python postprocess_guidellm_common.py --guidellm_results "$GUIDELLM_RESULTS" --results_path "$RESULTS_DIR"
+
+

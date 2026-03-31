@@ -1,0 +1,66 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: upload-s3
+spec:
+  description: |
+    Upload data to an s3 bucket.
+
+  workspaces:
+    - name: data
+    - name: target-credentials
+
+  params:
+    - name: archive
+      type: string
+    - name: paths
+      type: string
+    - name: target
+      type: object
+      properties:
+        bucket: { type: string }
+        endpoint: { type: string }
+   
+  steps:
+    - name: upload
+      image: ubuntu:24.04
+      workingDir: $(workspaces.data.path)
+      env:
+        - { name: ARCHIVE, value: "$(params.archive)" }
+      script: |
+        #!/usr/bin/env bash
+        set -eu
+        echo "upload-s3 called"
+
+        export AWS_ACCESS_KEY_ID=$(cat "$(workspaces.target-credentials.path)/AWS_ACCESS_KEY_ID")
+        export AWS_SECRET_ACCESS_KEY=$(cat "$(workspaces.target-credentials.path)/AWS_SECRET_ACCESS_KEY")
+
+        apt-get update && \
+            apt-get install -y --no-install-recommends ca-certificates curl unzip tar gzip && \
+            rm -rf /var/lib/apt/lists/*
+
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip && \
+          unzip /tmp/awscliv2.zip -d /tmp && \
+          /tmp/aws/install && \
+        rm -rf /tmp/aws /tmp/awscliv2.zip
+
+        tar --version && gzip --version && aws --version
+
+        readarray -t ITEMS < <(printf '%s' "$(params.paths)")
+
+        declare -a TAR_INPUT=()
+        for item in "${ITEMS[@]}"; do
+          [[ -z "$item" ]] && continue
+          TAR_INPUT+=("$item")
+        done
+
+        tar --version
+        tar -czf "${ARCHIVE}" -- "${TAR_INPUT[@]}"
+
+        aws s3 cp ${ARCHIVE} "s3://$(params.target.bucket)/${ARCHIVE}" \
+            --endpoint-url "$(params.target.endpoint)" \
+            --content-type "application/x-tar" \
+            --content-encoding "gzip" \
+            --no-progress
+
+        # rm -rf ${ARCHIVE}

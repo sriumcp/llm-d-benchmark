@@ -1,0 +1,45 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: test-run
+spec:
+  timeouts:
+    pipeline: 6h        # overall PipelineRun
+    tasks: 5h30m          # per-task timeout
+  taskRunTemplate:
+    serviceAccountName: helm-installer
+  workspaces:
+    - name: model-cache
+      persistentVolumeClaim:
+        claimName: model-pvc
+    - name: data
+      persistentVolumeClaim:
+        claimName: data-pvc
+    - name: hf-credentials
+      secret:
+        secretName: hf-secret
+        items:
+          - key: HF_TOKEN
+            path: HF_TOKEN
+    - name: target-credentials
+      secret:
+        secretName: s3-secret
+        items:
+          - key: AWS_ACCESS_KEY_ID
+            path: AWS_ACCESS_KEY_ID
+          - key: AWS_SECRET_ACCESS_KEY
+            path: AWS_SECRET_ACCESS_KEY
+
+  pipelineRef:
+    name: blis-test
+  params:
+    - { name: experimentId, value: "jan30-llama2-7b-chatsweeptps" }
+    # - { name: experimentId, value: "jan30-dummy" }
+    # - { name: model, value: "codellama/CodeLlama-34b-Instruct-hf" }
+    # 
+    - { name: model, value: "meta-llama/Llama-2-7b-hf" }
+    # - { name: model, value: "Qwen/Qwen2.5-Math-1.5B" }
+    
+    # - { name: model, value: "internlm/internlm-20b" }
+    # - { name: model, value: "meta-llama/Llama-3.3-70B-Instruct" }
+    - { name: namespace, value: mert }

@@ -1,0 +1,78 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: prefix-caching
+spec:
+  timeouts:
+    pipeline: 6h        # overall PipelineRun
+    tasks: 5h30m          # per-task timeout
+  taskRunTemplate:
+    serviceAccountName: helm-installer
+  workspaces:
+    - name: model-cache
+      persistentVolumeClaim:
+        claimName: model-pvc
+    - name: data
+      persistentVolumeClaim:
+        claimName: data-pvc
+    - name: source
+      persistentVolumeClaim:
+        claimName: source-pvc
+    - name: hf-credentials
+      secret:
+        secretName: hf-secret
+        items:
+          - key: HF_TOKEN
+            path: HF_TOKEN
+    - name: target-credentials
+      secret:
+        secretName: s3-secret
+        items:
+          - key: AWS_ACCESS_KEY_ID
+            path: AWS_ACCESS_KEY_ID
+          - key: AWS_SECRET_ACCESS_KEY
+            path: AWS_SECRET_ACCESS_KEY
+  pipelineRef:
+    name: prefix-caching
+  params:
+    - { name: experimentId, value: $EXPERIMENT_ID }
+    - { name: model, value: "meta-llama/Llama-3.1-8B-Instruct" }
+    - { name: namespace, value: $NAMESPACE }
+    - { name: debug, value: "true" }
+    - name: stack
+      value:
+        levels:
+          blockSize:
+            - 64
+            # - 128
+            # - 256
+          numCpuBlocks:
+            - 1000
+            # - 10000
+        # Other things can be overridden too. For example:
+        # model:
+        #   configuration:
+        #     decode:
+        #       parallelism:
+        #         tensor: 8
+    - name: workload
+      value:
+        treatments:
+          - question_len: 100
+            output_len: 100
+          # - question_len: 100
+          #   output_len: 200
+          # - question_len: 100
+          #   output_len: 1000
+          # - question_len: 300
+          #   output_len: 100
+          # - question_len: 300
+          #   output_len: 300
+          # - question_len: 300
+          #   output_len: 1000
+          # - question_len: 1000
+          #   output_len: 100
+          # - question_len: 1000
+          #   output_len: 300
+          # - question_len: 1000
+          #   output_len: 1000      
